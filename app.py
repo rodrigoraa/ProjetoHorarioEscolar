@@ -9,6 +9,59 @@ from ortools.sat.python import cp_model
 import pandas as pd
 import io
 
+def gerar_modelo_exemplo():
+    output = io.BytesIO()
+    
+    # Criando dados de exemplo cobrindo Fund I e Médio
+    dados_turmas = {
+        'Turma': ['1º Ano A (Fund I)', '6º Ano A', '3º Médio'],
+        'Aulas_Semanais': [25, 25, 30] # 25 aulas = 5 aulas por dia
+    }
+    df_t = pd.DataFrame(dados_turmas)
+    
+    # Criando dados de exemplo para a Grade
+    dados_grade = {
+        'Professor': [
+            'Prof. Márcia (Polivalente)', 'Prof. Beto (Ed. Física)', 'Prof. Carla (Artes)', # 1º Ano
+            'Prof. Ana (Mat)', 'Prof. Carlos (Hist)', 'Prof. Beatriz (Port)', # 6º Ano
+            'Prof. João (Física)', 'Prof. Ana (Mat)' # Médio
+        ],
+        'Materia': [
+            'Núcleo Comum', 'Ed. Física', 'Artes', # Matérias do 1º Ano
+            'Matemática', 'História', 'Português', # Matérias do 6º Ano
+            'Física', 'Matemática' # Matérias do Médio
+        ],
+        'Turmas_Alvo': [
+            '1º Ano A (Fund I)', '1º Ano A (Fund I)', '1º Ano A (Fund I)',
+            '6º Ano A, 3º Médio', '6º Ano A', '6º Ano A',
+            '3º Médio', '3º Médio'
+        ],
+        'Aulas_Por_Turma': [
+            21, 2, 2,  # A Polivalente pega a maior parte (21 aulas)
+            5, 3, 4,
+            4, 5
+        ],
+        'Indisponibilidade': [
+            '', '', 'sex', # Polivalente disponível sempre, Artes não pode sexta
+            '', 'seg:1, seg:2', '',
+            'ter:5', ''
+        ]
+    }
+    df_g = pd.DataFrame(dados_grade)
+    
+    # Salvando
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df_t.to_excel(writer, sheet_name='Turmas', index=False)
+        df_g.to_excel(writer, sheet_name='Grade_Curricular', index=False)
+        
+        # Ajuste de largura das colunas (Estético)
+        workbook = writer.book
+        worksheet = writer.sheets['Grade_Curricular']
+        worksheet.set_column('A:A', 25) # Coluna Professor mais larga
+        worksheet.set_column('C:C', 20) # Coluna Turmas mais larga
+        
+    return output.getvalue()
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
 
