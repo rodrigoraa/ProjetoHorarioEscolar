@@ -339,7 +339,7 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
                 dados_grade.append(linha_dict)
             st.dataframe(pd.DataFrame(dados_grade), use_container_width=True)
 
-# --- LÓGICA DO SOLVER ATUALIZADA (AGRUPAMENTO DINÂMICO) ---
+# --- LÓGICA DO SOLVER ATUALIZADA (AGRUPAMENTO GLOBAL) ---
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[]):
     model = cp_model.CpModel()
     horario = {}
@@ -440,51 +440,53 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 model.Add(sum(vars_dia_materia) <= 1 + tem_dobradinha)
                 todas_penalidades.append(tem_dobradinha)
 
-    # 2. AGRUPAMENTO DINÂMICO DE MATÉRIAS
-    # Se o usuário escolheu matérias (ex: ['Artes', 'Ed. Física'])
+    # 2. AGRUPAMENTO GLOBAL DE MATÉRIAS (LÓGICA NOVA)
+    # Garante que se a materia X acontecer HOJE na escola (qualquer turma), a materia Y também deve acontecer HOJE
     if len(materias_para_agrupar) > 1:
-        lista_turmas_unicas = list(turmas_totais.keys())
         
-        for turma in lista_turmas_unicas:
-            for d in range(len(dias_semana)):
-                # Para cada dia, verificamos a presença de CADA matéria escolhida
-                presence_vars = []
+        # Para cada dia da semana...
+        for d in range(len(dias_semana)):
+            presenca_materias_no_dia = []
+            
+            # Para cada matéria escolhida pelo usuário (ex: Artes, Ed. Física)
+            for mat_nome in materias_para_agrupar:
+                vars_dessa_materia_na_escola_toda = []
                 
-                for mat_nome in materias_para_agrupar:
-                    # Coletar todas as variáveis dessa matéria específica neste dia/turma
-                    vars_desta_materia = []
-                    
-                    # Procura na grade se essa matéria existe pra essa turma
-                    for item in grade_aulas:
-                        if item['turma'] == turma and item['materia'].strip() == mat_nome:
-                            aulas_por_dia = turmas_totais[turma] // 5
-                            for aula in range(aulas_por_dia):
-                                chave = (turma, d, aula, item['prof'], item['materia'])
-                                if chave in horario:
-                                    vars_desta_materia.append(horario[chave])
-                    
-                    # Se essa matéria existe na turma, cria variável indicadora "tem_materia_nesse_dia"
-                    if vars_desta_materia:
-                        tem_essa_materia = model.NewBoolVar(f'tem_{mat_nome}_{turma}_{d}')
-                        model.Add(sum(vars_desta_materia) > 0).OnlyEnforceIf(tem_essa_materia)
-                        model.Add(sum(vars_desta_materia) == 0).OnlyEnforceIf(tem_essa_materia.Not())
-                        presence_vars.append(tem_essa_materia)
+                # Varre TODA a grade (todas as turmas) procurando essa matéria neste dia
+                for item in grade_aulas:
+                    if item['materia'].strip() == mat_nome:
+                        turma = item['turma']
+                        aulas_dia = turmas_totais[turma] // 5
+                        for aula in range(aulas_dia):
+                            chave = (turma, d, aula, item['prof'], item['materia'])
+                            if chave in horario:
+                                vars_dessa_materia_na_escola_toda.append(horario[chave])
                 
-                # Se encontramos 2 ou mais das matérias selecionadas NESTA turma, forçamos que sejam iguais
-                # Lógica: Se tem A, deve ter B. Se não tem A, não deve ter B.
-                if len(presence_vars) >= 2:
-                    for i in range(len(presence_vars) - 1):
-                        var_a = presence_vars[i]
-                        var_b = presence_vars[i+1]
-                        
-                        # Criamos uma penalidade se elas forem diferentes
-                        # (Soft Constraint para não travar se for impossível matematicamente)
-                        penalidade_sep = model.NewBoolVar(f'sep_{turma}_{d}_{i}')
-                        model.Add(var_a != var_b).OnlyEnforceIf(penalidade_sep)
-                        model.Add(var_a == var_b).OnlyEnforceIf(penalidade_sep.Not())
-                        
-                        # Peso alto (10x) para garantir que fiquem juntas
-                        for _ in range(10): todas_penalidades.append(penalidade_sep)
+                # Cria variável booleana: "Matéria X acontece hoje na escola?"
+                tem_na_escola = model.NewBoolVar(f'tem_global_{mat_nome}_{d}')
+                if vars_dessa_materia_na_escola_toda:
+                    # Se soma > 0 então tem_na_escola = 1
+                    model.Add(sum(vars_dessa_materia_na_escola_toda) > 0).OnlyEnforceIf(tem_na_escola)
+                    model.Add(sum(vars_dessa_materia_na_escola_toda) == 0).OnlyEnforceIf(tem_na_escola.Not())
+                else:
+                    # Se a matéria nem existe na planilha, forçamos 0
+                    model.Add(tem_na_escola == 0)
+                
+                presenca_materias_no_dia.append(tem_na_escola)
+            
+            # AGORA APLICAMOS A REGRA: Todas devem ser iguais (Ou todas acontecem na escola hoje, ou nenhuma)
+            if len(presenca_materias_no_dia) >= 2:
+                for i in range(len(presenca_materias_no_dia) - 1):
+                    var_a = presenca_materias_no_dia[i]
+                    var_b = presenca_materias_no_dia[i+1]
+                    
+                    # Penalidade pesada se forem diferentes
+                    penalidade_sep = model.NewBoolVar(f'sep_global_{d}_{i}')
+                    model.Add(var_a != var_b).OnlyEnforceIf(penalidade_sep)
+                    model.Add(var_a == var_b).OnlyEnforceIf(penalidade_sep.Not())
+                    
+                    # Peso 10 para tentar forçar ao máximo
+                    for _ in range(10): todas_penalidades.append(penalidade_sep)
 
     if todas_penalidades:
         model.Minimize(sum(todas_penalidades))
@@ -533,17 +535,16 @@ if uploaded_file is not None:
             
             with st.expander("⚙️ Configurações Avançadas"):
                 # --- NOVO SELETOR DINÂMICO ---
-                # Pega todas as matérias únicas da planilha para o usuário escolher
                 todas_as_materias = sorted(list(set([g['materia'] for g in grade_aulas])))
                 
                 materias_selecionadas = st.multiselect(
-                    "Quais matérias devem acontecer no mesmo dia? (Agrupamento)",
+                    "Agrupamento Global (Sincronizar dias na Escola):",
                     options=todas_as_materias,
                     default=[],
-                    help="Selecione duas ou mais matérias. O sistema tentará colocar todas no mesmo dia para cada turma."
+                    help="Selecione matérias que devem acontecer nos mesmos dias na escola toda (independente da turma)."
                 )
                 
-                st.caption("Exemplo: Selecione 'Artes' e 'Ed. Física' para que fiquem juntas.")
+                st.caption("Ex: Se escolher Artes e Ed. Física, em qualquer dia que houver Artes na escola, haverá Ed. Física.")
 
             if st.button("🚀 Gerar Horário Agora", type="primary"):
                 status, solver, horario = resolver_horario(
@@ -551,7 +552,7 @@ if uploaded_file is not None:
                     grade_aulas, 
                     dias_semana, 
                     bloqueios_globais, 
-                    materias_para_agrupar=materias_selecionadas # Passa a lista escolhida
+                    materias_para_agrupar=materias_selecionadas 
                 )
                 
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
