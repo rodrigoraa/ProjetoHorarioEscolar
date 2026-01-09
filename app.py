@@ -339,7 +339,7 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
                 dados_grade.append(linha_dict)
             st.dataframe(pd.DataFrame(dados_grade), use_container_width=True)
 
-# --- LÓGICA DO SOLVER ATUALIZADA (AGRUPAMENTO GLOBAL) ---
+# --- LÓGICA DO SOLVER ATUALIZADA (COM EQUILÍBRIO DE CARGA) ---
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[]):
     model = cp_model.CpModel()
     horario = {}
@@ -420,7 +420,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     # OBJETIVOS (PENALIDADES)
     todas_penalidades = []
 
-    # 1. EVITAR DOBRADINHAS EXCESSIVAS
+    # 1. EVITAR DOBRADINHAS EXCESSIVAS (Peso 1)
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -440,19 +440,12 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 model.Add(sum(vars_dia_materia) <= 1 + tem_dobradinha)
                 todas_penalidades.append(tem_dobradinha)
 
-    # 2. AGRUPAMENTO GLOBAL DE MATÉRIAS (LÓGICA NOVA)
-    # Garante que se a materia X acontecer HOJE na escola (qualquer turma), a materia Y também deve acontecer HOJE
+    # 2. AGRUPAMENTO GLOBAL DE MATÉRIAS (Peso 10)
     if len(materias_para_agrupar) > 1:
-        
-        # Para cada dia da semana...
         for d in range(len(dias_semana)):
             presenca_materias_no_dia = []
-            
-            # Para cada matéria escolhida pelo usuário (ex: Artes, Ed. Física)
             for mat_nome in materias_para_agrupar:
                 vars_dessa_materia_na_escola_toda = []
-                
-                # Varre TODA a grade (todas as turmas) procurando essa matéria neste dia
                 for item in grade_aulas:
                     if item['materia'].strip() == mat_nome:
                         turma = item['turma']
@@ -462,32 +455,48 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                             if chave in horario:
                                 vars_dessa_materia_na_escola_toda.append(horario[chave])
                 
-                # Cria variável booleana: "Matéria X acontece hoje na escola?"
                 tem_na_escola = model.NewBoolVar(f'tem_global_{mat_nome}_{d}')
                 if vars_dessa_materia_na_escola_toda:
-                    # Se soma > 0 então tem_na_escola = 1
                     model.Add(sum(vars_dessa_materia_na_escola_toda) > 0).OnlyEnforceIf(tem_na_escola)
                     model.Add(sum(vars_dessa_materia_na_escola_toda) == 0).OnlyEnforceIf(tem_na_escola.Not())
                 else:
-                    # Se a matéria nem existe na planilha, forçamos 0
                     model.Add(tem_na_escola == 0)
-                
                 presenca_materias_no_dia.append(tem_na_escola)
             
-            # AGORA APLICAMOS A REGRA: Todas devem ser iguais (Ou todas acontecem na escola hoje, ou nenhuma)
             if len(presenca_materias_no_dia) >= 2:
                 for i in range(len(presenca_materias_no_dia) - 1):
                     var_a = presenca_materias_no_dia[i]
                     var_b = presenca_materias_no_dia[i+1]
-                    
-                    # Penalidade pesada se forem diferentes
                     penalidade_sep = model.NewBoolVar(f'sep_global_{d}_{i}')
                     model.Add(var_a != var_b).OnlyEnforceIf(penalidade_sep)
                     model.Add(var_a == var_b).OnlyEnforceIf(penalidade_sep.Not())
-                    
-                    # Peso 10 para tentar forçar ao máximo
                     for _ in range(10): todas_penalidades.append(penalidade_sep)
 
+    # 3. EQUILÍBRIO DE CARGA DO PROFESSOR (NOVO) (Peso 5 por aula excedente)
+    # Tenta evitar que um professor dê 6 ou mais aulas no mesmo dia (somando todas as turmas)
+    all_teachers = set(i['prof'] for i in grade_aulas)
+    for prof in all_teachers:
+        for d in range(len(dias_semana)):
+            vars_prof_dia = []
+            for item in grade_aulas:
+                if item['prof'] == prof:
+                    turma = item['turma']
+                    max_aulas_turma = turmas_totais[turma] // 5
+                    for aula in range(max_aulas_turma):
+                         chave = (turma, d, aula, prof, item['materia'])
+                         if chave in horario:
+                             vars_prof_dia.append(horario[chave])
+
+            if vars_prof_dia:
+                # Se passar de 5 aulas, penaliza.
+                # Como CP-SAT lida com inteiros, vamos criar uma variável para o excesso
+                excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
+                # excesso >= soma - 5
+                model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
+                # Multiplica a penalidade por 5 para ser mais importante que dobradinhas
+                for _ in range(5): todas_penalidades.append(excesso_carga)
+
+    # MINIMIZAÇÃO
     if todas_penalidades:
         model.Minimize(sum(todas_penalidades))
 
@@ -534,7 +543,7 @@ if uploaded_file is not None:
             st.markdown("### 2. Configurações e Geração")
             
             with st.expander("⚙️ Configurações Avançadas"):
-                # --- NOVO SELETOR DINÂMICO ---
+                # --- SELETOR DINÂMICO ---
                 todas_as_materias = sorted(list(set([g['materia'] for g in grade_aulas])))
                 
                 materias_selecionadas = st.multiselect(
