@@ -1,4 +1,5 @@
 import streamlit as st
+import hmac  # Necessário para a segurança da senha
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -8,8 +9,47 @@ from ortools.sat.python import cp_model
 import pandas as pd
 import io
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# --- CONFIGURAÇÃO DA PÁGINA (Deve ser a primeira linha de comando Streamlit) ---
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
+
+# ==========================================
+# 🔒 SISTEMA DE LOGIN / SENHA
+# ==========================================
+def check_password():
+    """Retorna `True` se o usuário tiver a senha correta."""
+
+    def password_entered():
+        """Checa se a senha digitada bate com a senha secreta."""
+        if hmac.compare_digest(st.session_state["password"], st.secrets["password"]):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Não armazena a senha na sessão
+        else:
+            st.session_state["password_correct"] = False
+
+    # Se a senha já foi validada na sessão atual, retorna True
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Mostra o campo de input de senha
+    st.markdown("### 🔒 Acesso Restrito")
+    st.text_input(
+        "Digite a senha de administrador:", 
+        type="password", 
+        on_change=password_entered, 
+        key="password"
+    )
+    
+    if "password_correct" in st.session_state:
+        st.error("😕 Senha incorreta. Tente novamente.")
+
+    return False
+
+if not check_password():
+    st.stop()  # 🛑 PARA A EXECUÇÃO AQUI SE A SENHA NÃO FOR VÁLIDA
+
+# ==========================================
+# 🏫 APLICAÇÃO PRINCIPAL (SÓ RODA SE LOGADO)
+# ==========================================
 
 st.title("🏫 Gerador de Horários Inteligente")
 st.markdown("Faça upload da planilha, clique em gerar, visualize as abas e baixe o PDF.")
@@ -237,7 +277,7 @@ def exibir_estatisticas(grade_aulas, dias_semana, solver, horario):
         
     df_stats = pd.DataFrame(dados_tabela)
     
-    # Heatmap colorido (Requer matplotlib instalado)
+    # Heatmap colorido (Requer matplotlib instalado, mas funciona sem se o pandas suportar)
     st.dataframe(
         df_stats.style.background_gradient(subset=dias_semana, cmap="Blues"),
         use_container_width=True
@@ -260,7 +300,7 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
             for aula in range(aulas_por_dia):
                 # Inserir Intervalo visualmente
                 if aula == 3:
-                     dados_grade.append({
+                      dados_grade.append({
                         "Horário": "INTERVALO", 
                         "Seg": "---", "Ter": "---", "Qua": "---", "Qui": "---", "Sex": "---"
                     })
