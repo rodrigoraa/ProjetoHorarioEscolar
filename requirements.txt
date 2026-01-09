@@ -3,4 +3,5 @@ pandas
 ortools
 reportlab
 openpyxl
+xlsxwriter
 matplotlib
