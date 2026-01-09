@@ -9,6 +9,12 @@ from ortools.sat.python import cp_model
 import pandas as pd
 import io
 
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
+
+# ==========================================
+# 🆕 FUNÇÃO: GERAR MODELO DE EXEMPLO
+# ==========================================
 def gerar_modelo_exemplo():
     output = io.BytesIO()
     
@@ -49,24 +55,21 @@ def gerar_modelo_exemplo():
     }
     df_g = pd.DataFrame(dados_grade)
     
-    # Salvando
+    # Salvando no Excel
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_t.to_excel(writer, sheet_name='Turmas', index=False)
         df_g.to_excel(writer, sheet_name='Grade_Curricular', index=False)
         
-        # Ajuste de largura das colunas (Estético)
+        # Ajuste visual das colunas
         workbook = writer.book
         worksheet = writer.sheets['Grade_Curricular']
-        worksheet.set_column('A:A', 25) # Coluna Professor mais larga
-        worksheet.set_column('C:C', 20) # Coluna Turmas mais larga
+        worksheet.set_column('A:A', 25) 
+        worksheet.set_column('C:C', 20) 
         
     return output.getvalue()
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
-
 # ==========================================
-# 🔒 SISTEMA DE LOGIN (NOVO)
+# 🔒 SISTEMA DE LOGIN
 # ==========================================
 def login_system():
     """Gerencia o login, logout e solicitação de acesso."""
@@ -126,11 +129,8 @@ if not login_system():
     st.stop()
 
 # ==========================================
-# 🏫 APLICAÇÃO PRINCIPAL (SÓ RODA SE LOGADO)
+# 🏫 LÓGICA DO SISTEMA (Funções de Cálculo)
 # ==========================================
-
-st.title("🏫 Gerador de Horários Inteligente")
-st.markdown("Faça upload da planilha, clique em gerar, visualize as abas e baixe o PDF.")
 
 # --- 1. LEITURA DE DADOS ---
 def carregar_dados(arquivo_upload):
@@ -360,7 +360,7 @@ def exibir_estatisticas(grade_aulas, dias_semana, solver, horario):
         use_container_width=True
     )
 
-# --- NOVO: VISUALIZAR GRADES NA TELA ---
+# --- VISUALIZAR GRADES NA TELA ---
 def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_aulas):
     st.markdown("---")
     st.subheader("🏫 Visualização dos Horários das Turmas")
@@ -399,8 +399,7 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
             df_grade_visual = pd.DataFrame(dados_grade)
             st.dataframe(df_grade_visual, use_container_width=True)
 
-
-# --- LÓGICA DO SOLVER ---
+# --- LÓGICA DO SOLVER (CORE) ---
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais):
     model = cp_model.CpModel()
     horario = {}
@@ -550,15 +549,41 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais)
 
     return status, solver, horario
 
-# --- APP PRINCIPAL ---
-uploaded_file = st.file_uploader("📂 Arraste o arquivo matriz.xlsx aqui", type=["xlsx"])
+# ==========================================
+# 🚀 APP PRINCIPAL (INTERFACE)
+# ==========================================
+
+st.title("🏫 Gerador de Horários Inteligente")
+
+# --- NOVO LAYOUT: Colunas para o Botão e Instruções ---
+col_text, col_btn = st.columns([3, 1])
+
+with col_text:
+    st.markdown("### 1. Upload da Planilha")
+    st.write("Dúvidas sobre o formato? Baixe o modelo ao lado para ver como preencher (inclui exemplos de Fundamental I).")
+
+with col_btn:
+    st.write("") # Espaçamento
+    modelo_bytes = gerar_modelo_exemplo()
+    
+    st.download_button(
+        label="📥 Baixar Modelo.xlsx",
+        data=modelo_bytes,
+        file_name="Modelo_Horario_Escolar.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Baixe esta planilha, preencha seus dados e depois faça o upload."
+    )
+
+# --- ÁREA DE UPLOAD ---
+uploaded_file = st.file_uploader("📂 Arraste o arquivo matriz.xlsx aqui", type=["xlsx"], label_visibility="collapsed")
 
 if uploaded_file is not None:
     turmas_totais, grade_aulas, dias_semana, bloqueios_globais = carregar_dados(uploaded_file)
     
     if turmas_totais:
         if verificar_capacidade(grade_aulas, bloqueios_globais):
-            if st.button("🚀 Gerar Horário Agora"):
+            st.markdown("### 2. Geração do Horário")
+            if st.button("🚀 Gerar Horário Agora", type="primary"):
                 status, solver, horario = resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais)
                 
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -574,10 +599,10 @@ if uploaded_file is not None:
                     pdf_bytes = gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario)
                     
                     st.download_button(
-                        label="📥 Baixar Horário em PDF",
+                        label="📥 Baixar Horário Final em PDF",
                         data=pdf_bytes,
-                        file_name="Horario_Escolar.pdf",
+                        file_name="Horario_Escolar_Final.pdf",
                         mime="application/pdf"
                     )
                 else:
-                    st.error("Não foi possível gerar um horário com essas restrições.")
+                    st.error("Não foi possível gerar um horário com essas restrições. Tente relaxar alguns bloqueios.")
