@@ -59,7 +59,7 @@ def login_system():
         st.write("Clique abaixo para solicitar suas credenciais via WhatsApp.")
         
         # --- CONFIGURE WHATSAPP AQUI ---
-        meu_zap = "+5567999455111"  # Coloque seu número com DDD
+        meu_zap = "+5567999455111"  # Coloque com DDD
         msg = "Olá! Gostaria de solicitar acesso ao Gerador de Horários."
         link_zap = f"https://wa.me/{meu_zap}?text={msg.replace(' ', '%20')}"
         
