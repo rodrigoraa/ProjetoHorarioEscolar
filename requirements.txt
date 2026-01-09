@@ -3,3 +3,4 @@ pandas
 ortools
 reportlab
 openpyxl
+matplotlib
