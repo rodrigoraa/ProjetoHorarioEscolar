@@ -561,6 +561,7 @@ col_text, col_btn = st.columns([3, 1])
 with col_text:
     st.markdown("### 1. Upload da Planilha")
     st.write("Dúvidas sobre o formato? Baixe o modelo ao lado para ver como preencher (inclui exemplos de Fundamental I).")
+    st.write("O modelo contém duas planilhas: 'Turmas' e 'Grade_Curricular'. Preencha conforme suas necessidades. As turmas devem seguir o mesmo padrão de nomes em ambas as planilhas.")
 
 with col_btn:
     st.write("") # Espaçamento
@@ -605,4 +606,4 @@ if uploaded_file is not None:
                         mime="application/pdf"
                     )
                 else:
-                    st.error("Não foi possível gerar um horário com essas restrições. Tente relaxar alguns bloqueios.")
+                    st.error("Não foi possível gerar um horário com essas restrições. Tente revisar as indisponibilidades.")
