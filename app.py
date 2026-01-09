@@ -1,5 +1,5 @@
 import streamlit as st
-import hmac  # Necessário para a segurança da senha
+import hmac
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -9,43 +9,68 @@ from ortools.sat.python import cp_model
 import pandas as pd
 import io
 
-# --- CONFIGURAÇÃO DA PÁGINA (Deve ser a primeira linha de comando Streamlit) ---
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
 
 # ==========================================
-# 🔒 SISTEMA DE LOGIN / SENHA
+# 🔒 SISTEMA DE LOGIN (NOVO)
 # ==========================================
-def check_password():
-    """Retorna `True` se o usuário tiver a senha correta."""
-
-    def password_entered():
-        """Checa se a senha digitada bate com a senha secreta."""
-        if hmac.compare_digest(st.session_state["password"], st.secrets["password"]):
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Não armazena a senha na sessão
-        else:
-            st.session_state["password_correct"] = False
-
-    # Se a senha já foi validada na sessão atual, retorna True
-    if st.session_state.get("password_correct", False):
+def login_system():
+    """Gerencia o login, logout e solicitação de acesso."""
+    
+    # 1. Se já estiver logado, libera o acesso e mostra sidebar
+    if st.session_state.get("logged_in", False):
+        with st.sidebar:
+            st.write(f"👤 Logado como: **{st.session_state['username']}**")
+            if st.button("🚪 Sair / Logout"):
+                st.session_state["logged_in"] = False
+                st.rerun()
         return True
 
-    # Mostra o campo de input de senha
-    st.markdown("### 🔒 Acesso Restrito")
-    st.text_input(
-        "Digite a senha de administrador:", 
-        type="password", 
-        on_change=password_entered, 
-        key="password"
-    )
-    
-    if "password_correct" in st.session_state:
-        st.error("😕 Senha incorreta. Tente novamente.")
+    # 2. Se não estiver logado, mostra a tela de login
+    st.markdown("## 🔒 Acesso Restrito ao Gerador de Horários")
+    st.info("Este sistema é exclusivo. Faça login ou solicite acesso ao administrador.")
+
+    col1, col2 = st.columns([1, 1])
+
+    # --- Lado Esquerdo: Login ---
+    with col1:
+        st.subheader("Entrar no Sistema")
+        username_input = st.text_input("👤 Usuário")
+        password_input = st.text_input("🔑 Senha", type="password")
+        
+        if st.button("Entrar"):
+            # Verifica se a seção [users] existe e se o usuário/senha batem
+            if "users" in st.secrets and username_input in st.secrets["users"]:
+                if hmac.compare_digest(st.secrets["users"][username_input], password_input):
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = username_input
+                    st.success("Login realizado com sucesso!")
+                    st.rerun()
+                else:
+                    st.error("Senha incorreta.")
+            else:
+                st.error("Usuário não encontrado.")
+
+    # --- Lado Direito: Solicitar Acesso ---
+    with col2:
+        st.subheader("Não tem acesso?")
+        st.write("O acesso é concedido manualmente pela direção.")
+        st.write("Clique abaixo para solicitar suas credenciais via WhatsApp.")
+        
+        # --- CONFIGURE SEU WHATSAPP AQUI ---
+        meu_zap = "5511999999999"  # Coloque seu número com DDD
+        msg = "Olá! Gostaria de solicitar acesso ao Gerador de Horários."
+        link_zap = f"https://wa.me/{meu_zap}?text={msg.replace(' ', '%20')}"
+        
+        st.link_button("📲 Solicitar Acesso via WhatsApp", link_zap)
+        st.caption("Ao clicar, você falará diretamente com o administrador.")
 
     return False
 
-if not check_password():
-    st.stop()  # 🛑 PARA A EXECUÇÃO AQUI SE A SENHA NÃO FOR VÁLIDA
+# 🛑 BLOQUEIO PRINCIPAL: Se não logar, o app para aqui.
+if not login_system():
+    st.stop()
 
 # ==========================================
 # 🏫 APLICAÇÃO PRINCIPAL (SÓ RODA SE LOGADO)
@@ -277,7 +302,6 @@ def exibir_estatisticas(grade_aulas, dias_semana, solver, horario):
         
     df_stats = pd.DataFrame(dados_tabela)
     
-    # Heatmap colorido (Requer matplotlib instalado, mas funciona sem se o pandas suportar)
     st.dataframe(
         df_stats.style.background_gradient(subset=dias_semana, cmap="Blues"),
         use_container_width=True
@@ -288,7 +312,6 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
     st.markdown("---")
     st.subheader("🏫 Visualização dos Horários das Turmas")
     
-    # Cria abas para cada turma
     lista_turmas = sorted(turmas_totais.keys())
     abas = st.tabs(lista_turmas)
     
@@ -298,7 +321,6 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
             dados_grade = []
             
             for aula in range(aulas_por_dia):
-                # Inserir Intervalo visualmente
                 if aula == 3:
                       dados_grade.append({
                         "Horário": "INTERVALO", 
@@ -309,7 +331,6 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
                 
                 for d_idx, dia_nome in enumerate(dias_semana):
                     conteudo = "---"
-                    # Busca quem está dando aula neste slot
                     for item in grade_aulas:
                         if item['turma'] == turma:
                             prof = item['prof']
@@ -424,10 +445,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais)
                     vars_dia_materia.append(horario[chave])
             
             if vars_dia_materia:
-                # OBRIGATÓRIO: Nunca > 2
-                model.Add(sum(vars_dia_materia) <= 2)
+                model.Add(sum(vars_dia_materia) <= 2) # Hard Limit
 
-                # PREFERÊNCIA: Tenta ser <= 1
                 tem_dobradinha = model.NewBoolVar(f'dobra_{turma}_{d}_{materia}')
                 model.Add(sum(vars_dia_materia) <= 1 + tem_dobradinha)
                 todas_penalidades.append(tem_dobradinha)
@@ -439,7 +458,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais)
             vars_arte = []
             vars_edfis = []
             
-            # Busca vars
             for item in grade_aulas:
                 if item['turma'] == turma:
                     if 'arte' in item['materia'].lower():
@@ -466,7 +484,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais)
                 model.Add(tem_arte != tem_edfis).OnlyEnforceIf(penalidade_separacao)
                 model.Add(tem_arte == tem_edfis).OnlyEnforceIf(penalidade_separacao.Not())
                 
-                # Peso 10
                 for _ in range(10): todas_penalidades.append(penalidade_separacao)
 
     if todas_penalidades:
@@ -494,13 +511,13 @@ if uploaded_file is not None:
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                     st.success(f"Horário Gerado com Sucesso! (Custo: {solver.ObjectiveValue()})")
                     
-                    # 1. MOSTRAR MAPA DE CALOR DOS PROFESSORES
+                    # 1. HEATMAP
                     exibir_estatisticas(grade_aulas, dias_semana, solver, horario)
                     
-                    # 2. MOSTRAR GRADES VISUAIS EM ABAS (NOVIDADE)
+                    # 2. GRADES VISUAIS
                     exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_aulas)
 
-                    # 3. BOTÃO DE DOWNLOAD
+                    # 3. DOWNLOAD
                     pdf_bytes = gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario)
                     
                     st.download_button(
