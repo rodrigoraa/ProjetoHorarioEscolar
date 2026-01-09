@@ -339,7 +339,7 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
                 dados_grade.append(linha_dict)
             st.dataframe(pd.DataFrame(dados_grade), use_container_width=True)
 
-# --- LÓGICA DO SOLVER ATUALIZADA (COM EQUILÍBRIO DE CARGA) ---
+# --- LÓGICA DO SOLVER ATUALIZADA (COM EQUILÍBRIO DE CARGA E MINIMO DE 2 AULAS) ---
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[]):
     model = cp_model.CpModel()
     horario = {}
@@ -472,8 +472,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                     model.Add(var_a == var_b).OnlyEnforceIf(penalidade_sep.Not())
                     for _ in range(10): todas_penalidades.append(penalidade_sep)
 
-    # 3. EQUILÍBRIO DE CARGA DO PROFESSOR (NOVO) (Peso 5 por aula excedente)
-    # Tenta evitar que um professor dê 6 ou mais aulas no mesmo dia (somando todas as turmas)
+    # 3. CONTROLES DE CARGA DO PROFESSOR (MAX 5 e EVITAR 1)
     all_teachers = set(i['prof'] for i in grade_aulas)
     for prof in all_teachers:
         for d in range(len(dias_semana)):
@@ -488,13 +487,21 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                              vars_prof_dia.append(horario[chave])
 
             if vars_prof_dia:
-                # Se passar de 5 aulas, penaliza.
-                # Como CP-SAT lida com inteiros, vamos criar uma variável para o excesso
+                # Regra A: Evitar Excesso (> 5 aulas)
                 excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
-                # excesso >= soma - 5
                 model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
-                # Multiplica a penalidade por 5 para ser mais importante que dobradinhas
+                # Peso 5 (Importante, mas aceitável se necessário)
                 for _ in range(5): todas_penalidades.append(excesso_carga)
+
+                # Regra B: Evitar Janela Única (== 1 aula) (Peso 5)
+                # Cria variavel booleana que é 1 se a soma for exatamente 1
+                eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
+                model.Add(sum(vars_prof_dia) == 1).OnlyEnforceIf(eh_um)
+                model.Add(sum(vars_prof_dia) != 1).OnlyEnforceIf(eh_um.Not())
+                
+                # Penalidade se for 1 aula
+                for _ in range(5): todas_penalidades.append(eh_um)
+
 
     # MINIMIZAÇÃO
     if todas_penalidades:
@@ -543,7 +550,7 @@ if uploaded_file is not None:
             st.markdown("### 2. Configurações e Geração")
             
             with st.expander("⚙️ Configurações Avançadas"):
-                # --- SELETOR DINÂMICO ---
+                # --- NOVO SELETOR DINÂMICO ---
                 todas_as_materias = sorted(list(set([g['materia'] for g in grade_aulas])))
                 
                 materias_selecionadas = st.multiselect(
@@ -576,4 +583,4 @@ if uploaded_file is not None:
                         mime="application/pdf"
                     )
                 else:
-                    st.error("Não foi possível gerar um horário com essas restrições. Tente relaxar alguns bloqueios.")
+                    st.error("Não foi possível gerar um horário com essas restrições. Tente rever as restrições.")
