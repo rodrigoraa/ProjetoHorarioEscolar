@@ -20,7 +20,7 @@ def gerar_modelo_exemplo():
     
     # Criando dados de exemplo cobrindo Fund I e Médio
     dados_turmas = {
-        'Turma': ['1º Ano A (Fund I)', '6º Ano A', '3º Médio'],
+        'Turma': ['1º Ano - Fundamental B', '6º Ano - Fundamental', '3º Médio'],
         'Aulas_Semanais': [25, 25, 30] 
     }
     df_t = pd.DataFrame(dados_turmas)
@@ -28,18 +28,18 @@ def gerar_modelo_exemplo():
     # Criando dados de exemplo para a Grade
     dados_grade = {
         'Professor': [
-            'Prof. Márcia (Polivalente)', 'Prof. Beto (Ed. Física)', 'Prof. Carla (Artes)',
-            'Prof. Ana (Mat)', 'Prof. Carlos (Hist)', 'Prof. Beatriz (Port)',
-            'Prof. João (Física)', 'Prof. Ana (Mat)'
+            'Prof. Márcia', 'Prof. Beto ', 'Prof. Carla ',
+            'Prof. Ana ', 'Prof. Carlos', 'Prof. Beatriz ',
+            'Prof. João ', 'Prof. Ana '
         ],
         'Materia': [
-            'Núcleo Comum', 'Ed. Física', 'Artes',
+            'Geografia', 'Ed. Física', 'Artes',
             'Matemática', 'História', 'Português',
             'Física', 'Matemática'
         ],
         'Turmas_Alvo': [
-            '1º Ano A (Fund I)', '1º Ano A (Fund I)', '1º Ano A (Fund I)',
-            '6º Ano A, 3º Médio', '6º Ano A', '6º Ano A',
+            '1º Ano - Fundamental B', '1º Ano - Fundamental B', '1º Ano - Fundamental B',
+            '1º Ano - Fundamental B, 3º Médio', '6º Ano - Fundamental', '6º Ano - Fundamental',
             '3º Médio', '3º Médio'
         ],
         'Aulas_Por_Turma': [
@@ -508,7 +508,9 @@ col_text, col_btn = st.columns([3, 1])
 with col_text:
     st.markdown("### 1. Upload da Planilha")
     st.write("Dúvidas sobre o formato? Baixe o modelo ao lado.")
-    st.write("O arquivo possui duas planilhas. Fique atento ao nomes das turmas, que devem ser respectivos em ambas planilhas.")
+    st.write("O arquivo possui duas planilhas. Fique atento aos nomes das turmas, que devem ser respectivos em ambas planilhas.")
+    st.write("Na planilha Turmas, defina as turmas existentes e quantas aulas SEMANAIS cada uma deve ter.")
+    st.write("Na planilha Grade_Curricular, defina os professores, matérias, turmas-alvo(mesmos nomes existentes na planilha Turmas) , quantidade de aulas por turma e eventuais indisponibilidades.")
 
 with col_btn:
     st.write("") 
