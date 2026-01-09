@@ -7,13 +7,12 @@ from reportlab.lib.colors import HexColor
 from ortools.sat.python import cp_model
 import pandas as pd
 import io
-import datetime
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
 
 st.title("🏫 Gerador de Horários Inteligente")
-st.markdown("Faça upload da planilha, clique em gerar e aguarde a mágica.")
+st.markdown("Faça upload da planilha, clique em gerar, visualize as abas e baixe o PDF.")
 
 # --- 1. LEITURA DE DADOS ---
 def carregar_dados(arquivo_upload):
@@ -167,7 +166,13 @@ def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario):
         dados = [['Horário'] + dias_semana]
         aulas_por_dia = turmas_totais[turma] // 5
         
+        linha_intervalo_idx = -1 
+
         for aula in range(aulas_por_dia):
+            if aula == 3:
+                dados.append(["INTERVALO", "", "", "", "", ""]) 
+                linha_intervalo_idx = 4 
+
             linha = [f"{aula + 1}ª Aula"]
             for d in range(len(dias_semana)):
                 conteudo = "---"
@@ -186,6 +191,17 @@ def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario):
             
         t = Table(dados, colWidths=[60] + [140]*5)
         t.setStyle(estilo_tabela)
+
+        if linha_intervalo_idx != -1:
+            estilo_intervalo = TableStyle([
+                ('BACKGROUND', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), HexColor('#95a5a6')), 
+                ('TEXTCOLOR', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), colors.white),
+                ('SPAN', (0, linha_intervalo_idx), (-1, linha_intervalo_idx)), 
+                ('FONTNAME', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), 'Helvetica-Bold'),
+                ('ALIGN', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), 'CENTER'),
+            ])
+            t.setStyle(estilo_intervalo)
+
         elements.append(t)
         elements.append(Spacer(1, 25))
         elements.append(PageBreak())
@@ -193,6 +209,82 @@ def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario):
     doc.build(elements)
     buffer.seek(0)
     return buffer
+
+# --- ESTATÍSTICAS NA TELA ---
+def exibir_estatisticas(grade_aulas, dias_semana, solver, horario):
+    st.markdown("---")
+    st.subheader("📅 Distribuição de Aulas por Professor (Dia a Dia)")
+    
+    professores = sorted(list(set(item['prof'] for item in grade_aulas)))
+    contagem = {prof: [0]*len(dias_semana) for prof in professores}
+    
+    for chave, var in horario.items():
+        if solver.Value(var) == 1:
+            prof = chave[3]
+            dia_idx = chave[1]
+            contagem[prof][dia_idx] += 1
+
+    dados_tabela = []
+    for prof in professores:
+        linha = {'Professor': prof}
+        total = 0
+        for i, dia in enumerate(dias_semana):
+            qtd = contagem[prof][i]
+            linha[dia] = qtd
+            total += qtd
+        linha['TOTAL'] = total
+        dados_tabela.append(linha)
+        
+    df_stats = pd.DataFrame(dados_tabela)
+    
+    # Heatmap colorido (Requer matplotlib instalado)
+    st.dataframe(
+        df_stats.style.background_gradient(subset=dias_semana, cmap="Blues"),
+        use_container_width=True
+    )
+
+# --- NOVO: VISUALIZAR GRADES NA TELA ---
+def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_aulas):
+    st.markdown("---")
+    st.subheader("🏫 Visualização dos Horários das Turmas")
+    
+    # Cria abas para cada turma
+    lista_turmas = sorted(turmas_totais.keys())
+    abas = st.tabs(lista_turmas)
+    
+    for aba, turma in zip(abas, lista_turmas):
+        with aba:
+            aulas_por_dia = turmas_totais[turma] // 5
+            dados_grade = []
+            
+            for aula in range(aulas_por_dia):
+                # Inserir Intervalo visualmente
+                if aula == 3:
+                     dados_grade.append({
+                        "Horário": "INTERVALO", 
+                        "Seg": "---", "Ter": "---", "Qua": "---", "Qui": "---", "Sex": "---"
+                    })
+
+                linha_dict = {"Horário": f"{aula + 1}ª Aula"}
+                
+                for d_idx, dia_nome in enumerate(dias_semana):
+                    conteudo = "---"
+                    # Busca quem está dando aula neste slot
+                    for item in grade_aulas:
+                        if item['turma'] == turma:
+                            prof = item['prof']
+                            materia = item['materia']
+                            chave = (turma, d_idx, aula, prof, materia)
+                            if chave in horario and solver.Value(horario[chave]) == 1:
+                                conteudo = f"{materia} ({prof})"
+                                break
+                    linha_dict[dia_nome] = conteudo
+                
+                dados_grade.append(linha_dict)
+            
+            df_grade_visual = pd.DataFrame(dados_grade)
+            st.dataframe(df_grade_visual, use_container_width=True)
+
 
 # --- LÓGICA DO SOLVER ---
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais):
@@ -277,7 +369,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais)
     # OBJETIVOS (PENALIDADES)
     todas_penalidades = []
 
-    # 1. EVITAR DOBRADINHAS
+    # 1. EVITAR DOBRADINHAS EXCESSIVAS
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -362,6 +454,13 @@ if uploaded_file is not None:
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                     st.success(f"Horário Gerado com Sucesso! (Custo: {solver.ObjectiveValue()})")
                     
+                    # 1. MOSTRAR MAPA DE CALOR DOS PROFESSORES
+                    exibir_estatisticas(grade_aulas, dias_semana, solver, horario)
+                    
+                    # 2. MOSTRAR GRADES VISUAIS EM ABAS (NOVIDADE)
+                    exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_aulas)
+
+                    # 3. BOTÃO DE DOWNLOAD
                     pdf_bytes = gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario)
                     
                     st.download_button(
