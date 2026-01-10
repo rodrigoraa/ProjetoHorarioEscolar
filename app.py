@@ -13,19 +13,17 @@ import io
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
 
 # ==========================================
-# 🆕 FUNÇÃO: GERAR MODELO DE EXEMPLO
+#  FUNÇÃO: GERAR MODELO DE EXEMPLO
 # ==========================================
 def gerar_modelo_exemplo():
     output = io.BytesIO()
     
-    # Criando dados de exemplo cobrindo Fund I e Médio
     dados_turmas = {
         'Turma': ['1º Ano - Fundamental B', '6º Ano - Fundamental', '3º Médio'],
         'Aulas_Semanais': [25, 25, 30] 
     }
     df_t = pd.DataFrame(dados_turmas)
     
-    # Criando dados de exemplo para a Grade
     dados_grade = {
         'Professor': [
             'Prof. Márcia', 'Prof. Beto ', 'Prof. Carla ',
@@ -55,11 +53,9 @@ def gerar_modelo_exemplo():
     }
     df_g = pd.DataFrame(dados_grade)
     
-    # Salvando no Excel
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_t.to_excel(writer, sheet_name='Turmas', index=False)
         df_g.to_excel(writer, sheet_name='Grade_Curricular', index=False)
-        
         workbook = writer.book
         worksheet = writer.sheets['Grade_Curricular']
         worksheet.set_column('A:A', 25) 
@@ -68,7 +64,7 @@ def gerar_modelo_exemplo():
     return output.getvalue()
 
 # ==========================================
-# 🔒 SISTEMA DE LOGIN
+# SISTEMA DE LOGIN
 # ==========================================
 def login_system():
     if st.session_state.get("logged_in", False):
@@ -104,8 +100,7 @@ def login_system():
     with col2:
         st.subheader("Não tem acesso?")
         meu_zap = "+5567999455111"
-        msg = "Olá! Gostaria de solicitar acesso ao Gerador de Horários."
-        link_zap = f"https://wa.me/{meu_zap}?text={msg.replace(' ', '%20')}"
+        link_zap = f"https://wa.me/{meu_zap}?text=Solicito%20acesso%20ao%20Gerador"
         st.link_button("📲 Solicitar Acesso via WhatsApp", link_zap)
 
     return False
@@ -114,7 +109,7 @@ if not login_system():
     st.stop()
 
 # ==========================================
-# 🏫 LÓGICA DO SISTEMA
+# LÓGICA DO SISTEMA
 # ==========================================
 
 def carregar_dados(arquivo_upload):
@@ -339,8 +334,8 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
                 dados_grade.append(linha_dict)
             st.dataframe(pd.DataFrame(dados_grade), use_container_width=True)
 
-# --- LÓGICA DO SOLVER ATUALIZADA (COM EQUILÍBRIO DE CARGA E MINIMO DE 2 AULAS) ---
-def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[]):
+# --- LÓGICA DO SOLVER ATUALIZADA (AGORA COM AULAS VAGAS) ---
+def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[], mapa_aulas_vagas={}):
     model = cp_model.CpModel()
     horario = {}
 
@@ -417,6 +412,39 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         if chave in horario:
                             model.Add(horario[chave] == 0)
 
+    # R5: GARANTIA DE AULAS VAGAS (NOVO)
+    # A lógica é: Total de aulas dadas pelo prof <= (Total de Slots na semana - Bloqueios - Aulas Vagas Pedidas)
+    total_slots_semana = max_aulas_escola * len(dias_semana)
+    
+    for prof, qtd_vagas_exigidas in mapa_aulas_vagas.items():
+        if qtd_vagas_exigidas > 0:
+            # 1. Conta quantos bloqueios (indisponibilidades) REAIS esse professor tem
+            # Bloqueios só contam se estiverem dentro do horário letivo (ex: até a 5ª ou 6ª aula)
+            bloqueios_count = 0
+            if prof in bloqueios_globais:
+                for (d, aula) in bloqueios_globais[prof]:
+                    if aula < max_aulas_escola:
+                        bloqueios_count += 1
+            
+            # 2. Calcula capacidade real
+            capacidade_maxima = total_slots_semana - bloqueios_count - qtd_vagas_exigidas
+            
+            # 3. Coleta todas as variáveis de aula desse professor
+            vars_todas_aulas_prof = []
+            for item in grade_aulas:
+                if item['prof'] == prof:
+                    turma = item['turma']
+                    aulas_turma = turmas_totais[turma] // 5
+                    for d in range(len(dias_semana)):
+                        for aula in range(aulas_turma):
+                            chave = (turma, d, aula, prof, item['materia'])
+                            if chave in horario:
+                                vars_todas_aulas_prof.append(horario[chave])
+            
+            # 4. Adiciona a restrição dura (Hard Constraint)
+            if vars_todas_aulas_prof:
+                model.Add(sum(vars_todas_aulas_prof) <= capacidade_maxima)
+
     # OBJETIVOS (PENALIDADES)
     todas_penalidades = []
 
@@ -490,16 +518,12 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 # Regra A: Evitar Excesso (> 5 aulas)
                 excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
                 model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
-                # Peso 5 (Importante, mas aceitável se necessário)
                 for _ in range(5): todas_penalidades.append(excesso_carga)
 
                 # Regra B: Evitar Janela Única (== 1 aula) (Peso 5)
-                # Cria variavel booleana que é 1 se a soma for exatamente 1
                 eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
                 model.Add(sum(vars_prof_dia) == 1).OnlyEnforceIf(eh_um)
                 model.Add(sum(vars_prof_dia) != 1).OnlyEnforceIf(eh_um.Not())
-                
-                # Penalidade se for 1 aula
                 for _ in range(5): todas_penalidades.append(eh_um)
 
 
@@ -516,10 +540,10 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     return status, solver, horario
 
 # ==========================================
-# 🚀 APP PRINCIPAL (INTERFACE)
+# APP PRINCIPAL (INTERFACE)
 # ==========================================
 
-st.title("🏫 Gerador de Horários Inteligente")
+st.title("Gerador de Horários Inteligente")
 
 col_text, col_btn = st.columns([3, 1])
 
@@ -528,7 +552,7 @@ with col_text:
     st.write("Dúvidas sobre o formato? Baixe o modelo ao lado.")
     st.write("O arquivo possui duas planilhas. Fique atento aos nomes das turmas, que devem ser respectivos em ambas planilhas.")
     st.write("Na planilha Turmas, defina as turmas existentes e quantas aulas SEMANAIS cada uma deve ter.")
-    st.write("Na planilha Grade_Curricular, defina os professores, matérias, turmas-alvo(mesmos nomes existentes na planilha Turmas) , quantidade de aulas por turma e eventuais indisponibilidades.")
+    st.write("Na planilha Grade_Curricular, defina os professores, matérias, turmas-alvo, quantidade e indisponibilidades.")
 
 with col_btn:
     st.write("") 
@@ -550,17 +574,45 @@ if uploaded_file is not None:
             st.markdown("### 2. Configurações e Geração")
             
             with st.expander("⚙️ Configurações Avançadas"):
-                # --- NOVO SELETOR DINÂMICO ---
+                # 1. Seletor de Matérias Sincronizadas
+                st.markdown("#### 🔗 Sincronizar Matérias (Escola Toda)")
                 todas_as_materias = sorted(list(set([g['materia'] for g in grade_aulas])))
-                
                 materias_selecionadas = st.multiselect(
-                    "Agrupamento Global (Sincronizar dias na Escola):",
+                    "Selecione matérias:",
                     options=todas_as_materias,
                     default=[],
-                    help="Selecione matérias que devem acontecer nos mesmos dias na escola toda (independente da turma)."
+                    help="As matérias selecionadas acontecerão nos mesmos dias na escola toda."
                 )
                 
-                st.caption("Ex: Se escolher Artes e Ed. Física, em qualquer dia que houver Artes na escola, haverá Ed. Física.")
+                # 2. Editor de Aulas Vagas
+                st.markdown("#### ⏳ Aulas Vagas (Hora-Atividade)")
+                st.caption("Defina quantas aulas livres cada professor precisa ter na semana.")
+                
+                # Cria DataFrame para edição
+                lista_profs = sorted(list(set([g['prof'] for g in grade_aulas])))
+                df_vagas = pd.DataFrame({
+                    "Professor": lista_profs,
+                    "Aulas Vagas": [0] * len(lista_profs)
+                })
+                
+                # Mostra tabela editável
+                df_editado = st.data_editor(
+                    df_vagas, 
+                    column_config={
+                        "Aulas Vagas": st.column_config.NumberColumn(
+                            "Qtd. Aulas Vagas",
+                            min_value=0,
+                            max_value=15,
+                            step=1,
+                            help="Quantas aulas este professor precisa ter livre?"
+                        )
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                # Converte para dicionário para passar para a função
+                mapa_aulas_vagas_user = dict(zip(df_editado["Professor"], df_editado["Aulas Vagas"]))
 
             if st.button("🚀 Gerar Horário Agora", type="primary"):
                 status, solver, horario = resolver_horario(
@@ -568,7 +620,8 @@ if uploaded_file is not None:
                     grade_aulas, 
                     dias_semana, 
                     bloqueios_globais, 
-                    materias_para_agrupar=materias_selecionadas 
+                    materias_para_agrupar=materias_selecionadas,
+                    mapa_aulas_vagas=mapa_aulas_vagas_user # Passa o dicionário novo
                 )
                 
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -583,4 +636,4 @@ if uploaded_file is not None:
                         mime="application/pdf"
                     )
                 else:
-                    st.error("Não foi possível gerar um horário com essas restrições. Tente rever as restrições.")
+                    st.error("Não foi possível gerar um horário com essas restrições. Verifique se a quantidade de Aulas Vagas solicitada é matematicamente possível.")
