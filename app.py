@@ -412,24 +412,26 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         if chave in horario:
                             model.Add(horario[chave] == 0)
 
-    # R5: GARANTIA DE AULAS VAGAS (NOVO)
-    # A lógica é: Total de aulas dadas pelo prof <= (Total de Slots na semana - Bloqueios - Aulas Vagas Pedidas)
+    # R5: GARANTIA DE AULAS VAGAS (CORRIGIDO AQUI)
     total_slots_semana = max_aulas_escola * len(dias_semana)
     
     for prof, qtd_vagas_exigidas in mapa_aulas_vagas.items():
-        if qtd_vagas_exigidas > 0:
-            # 1. Conta quantos bloqueios (indisponibilidades) REAIS esse professor tem
-            # Bloqueios só contam se estiverem dentro do horário letivo (ex: até a 5ª ou 6ª aula)
+        # Converte para int para garantir que não venha float ou numpy.int64
+        qtd_vagas_int = int(qtd_vagas_exigidas)
+        
+        if qtd_vagas_int > 0:
             bloqueios_count = 0
             if prof in bloqueios_globais:
                 for (d, aula) in bloqueios_globais[prof]:
                     if aula < max_aulas_escola:
                         bloqueios_count += 1
             
-            # 2. Calcula capacidade real
-            capacidade_maxima = total_slots_semana - bloqueios_count - qtd_vagas_exigidas
+            # Cálculo da capacidade
+            capacidade_calculada = total_slots_semana - bloqueios_count - qtd_vagas_int
             
-            # 3. Coleta todas as variáveis de aula desse professor
+            # Garante que seja int nativo do Python
+            capacidade_maxima = int(capacidade_calculada)
+            
             vars_todas_aulas_prof = []
             for item in grade_aulas:
                 if item['prof'] == prof:
@@ -441,8 +443,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                             if chave in horario:
                                 vars_todas_aulas_prof.append(horario[chave])
             
-            # 4. Adiciona a restrição dura (Hard Constraint)
             if vars_todas_aulas_prof:
+                # CORREÇÃO CRÍTICA AQUI: Usando o valor já convertido
                 model.Add(sum(vars_todas_aulas_prof) <= capacidade_maxima)
 
     # OBJETIVOS (PENALIDADES)
@@ -463,7 +465,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                     vars_dia_materia.append(horario[chave])
             
             if vars_dia_materia:
-                model.Add(sum(vars_dia_materia) <= 2) # Hard Limit
+                model.Add(sum(vars_dia_materia) <= 2) 
                 tem_dobradinha = model.NewBoolVar(f'dobra_{turma}_{d}_{materia}')
                 model.Add(sum(vars_dia_materia) <= 1 + tem_dobradinha)
                 todas_penalidades.append(tem_dobradinha)
@@ -515,19 +517,15 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                              vars_prof_dia.append(horario[chave])
 
             if vars_prof_dia:
-                # Regra A: Evitar Excesso (> 5 aulas)
                 excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
                 model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
                 for _ in range(5): todas_penalidades.append(excesso_carga)
 
-                # Regra B: Evitar Janela Única (== 1 aula) (Peso 5)
                 eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
                 model.Add(sum(vars_prof_dia) == 1).OnlyEnforceIf(eh_um)
                 model.Add(sum(vars_prof_dia) != 1).OnlyEnforceIf(eh_um.Not())
                 for _ in range(5): todas_penalidades.append(eh_um)
 
-
-    # MINIMIZAÇÃO
     if todas_penalidades:
         model.Minimize(sum(todas_penalidades))
 
