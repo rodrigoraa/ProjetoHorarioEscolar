@@ -1,16 +1,26 @@
 import streamlit as st
 import hmac
+import pandas as pd
+import io
+import unicodedata
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.colors import HexColor
 from ortools.sat.python import cp_model
-import pandas as pd
-import io
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
+
+# ==========================================
+#  FUNÇÕES AUXILIARES (NORMALIZAÇÃO)
+# ==========================================
+def normalizar_texto(texto):
+    """Remove acentos e espaços extras para comparação segura."""
+    if not isinstance(texto, str):
+        texto = str(texto)
+    return unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII').strip().lower()
 
 # ==========================================
 #  FUNÇÃO: GERAR MODELO DE EXEMPLO
@@ -64,7 +74,7 @@ def gerar_modelo_exemplo():
     return output.getvalue()
 
 # ==========================================
-# SISTEMA DE LOGIN
+# SISTEMA DE LOGIN (SEGURO PARA LOCALHOST)
 # ==========================================
 def login_system():
     if st.session_state.get("logged_in", False):
@@ -86,8 +96,11 @@ def login_system():
         password_input = st.text_input("🔑 Senha", type="password")
         
         if st.button("Entrar"):
-            if "users" in st.secrets and username_input in st.secrets["users"]:
-                if hmac.compare_digest(st.secrets["users"][username_input], password_input):
+            # .get() evita erro se 'users' não existir nos secrets locais
+            users_db = st.secrets.get("users", {})
+            
+            if username_input in users_db:
+                if hmac.compare_digest(users_db[username_input], password_input):
                     st.session_state["logged_in"] = True
                     st.session_state["username"] = username_input
                     st.success("Login realizado com sucesso!")
@@ -109,13 +122,21 @@ if not login_system():
     st.stop()
 
 # ==========================================
-# LÓGICA DO SISTEMA
+# LÓGICA DO SISTEMA (COM CACHE E VALIDAÇÃO)
 # ==========================================
 
+@st.cache_data(ttl=3600, show_spinner="Lendo arquivo Excel...")
 def carregar_dados(arquivo_upload):
     try:
         df_turmas = pd.read_excel(arquivo_upload, sheet_name='Turmas')
         df_grade = pd.read_excel(arquivo_upload, sheet_name='Grade_Curricular')
+        
+        # Validação de Colunas Básicas
+        cols_obrigatorias_grade = {'Professor', 'Materia', 'Turmas_Alvo', 'Aulas_Por_Turma'}
+        if not cols_obrigatorias_grade.issubset(df_grade.columns):
+            st.error(f"Erro: A planilha Grade_Curricular deve conter as colunas: {cols_obrigatorias_grade}")
+            return None, None, None, {}
+
     except Exception as e:
         st.error(f"Erro ao ler Excel: {e}")
         return None, None, None, {}
@@ -136,6 +157,7 @@ def carregar_dados(arquivo_upload):
 
     for _, row in df_grade.iterrows():
         prof_raw = str(row['Professor'])
+        # Normalização simples para exibição, mas mantemos o ID consistente
         prof = prof_raw.lower().replace('prof.', '').replace('profª', '').replace('profa', '').strip().title()
         materia = str(row['Materia']).strip()
         
@@ -171,6 +193,7 @@ def carregar_dados(arquivo_upload):
 
         for t_raw in turmas_alvo:
             turma = t_raw.strip()
+            # Validação: Só adiciona se a turma existir na aba Turmas
             if turma in turmas_totais:
                 grade_aulas.append({'prof': prof, 'materia': materia, 'turma': turma, 'qtd': aulas})
     
@@ -185,7 +208,7 @@ def verificar_capacidade(grade_aulas, bloqueios_globais):
         carga_prof[p] += item['qtd']
 
     erros_fatais = False
-    max_slots_semana = 30
+    max_slots_semana = 30 # Assumindo 6 tempos x 5 dias como teto físico
     logs = []
     
     for prof, carga_total in carga_prof.items():
@@ -334,7 +357,9 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
                 dados_grade.append(linha_dict)
             st.dataframe(pd.DataFrame(dados_grade), use_container_width=True)
 
-# --- LÓGICA DO SOLVER ATUALIZADA (AGORA COM AULAS VAGAS) ---
+# ==========================================
+# LÓGICA DO SOLVER (CORRIGIDA: INT + SEM ANTI-JANELA)
+# ==========================================
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[], mapa_aulas_vagas={}):
     model = cp_model.CpModel()
     horario = {}
@@ -412,11 +437,11 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         if chave in horario:
                             model.Add(horario[chave] == 0)
 
-    # R5: GARANTIA DE AULAS VAGAS (CORRIGIDO AQUI)
+    # R5: GARANTIA DE AULAS VAGAS (CORRIGIDO PARA INT)
     total_slots_semana = max_aulas_escola * len(dias_semana)
     
     for prof, qtd_vagas_exigidas in mapa_aulas_vagas.items():
-        # Converte para int para garantir que não venha float ou numpy.int64
+        # Converte para int para garantir que não venha float
         qtd_vagas_int = int(qtd_vagas_exigidas)
         
         if qtd_vagas_int > 0:
@@ -429,7 +454,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
             # Cálculo da capacidade
             capacidade_calculada = total_slots_semana - bloqueios_count - qtd_vagas_int
             
-            # Garante que seja int nativo do Python
+            # CORREÇÃO: Garante inteiro nativo
             capacidade_maxima = int(capacidade_calculada)
             
             vars_todas_aulas_prof = []
@@ -444,7 +469,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                                 vars_todas_aulas_prof.append(horario[chave])
             
             if vars_todas_aulas_prof:
-                # CORREÇÃO CRÍTICA AQUI: Usando o valor já convertido
+                # Usa capacidade_maxima (int)
                 model.Add(sum(vars_todas_aulas_prof) <= capacidade_maxima)
 
     # OBJETIVOS (PENALIDADES)
@@ -477,7 +502,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
             for mat_nome in materias_para_agrupar:
                 vars_dessa_materia_na_escola_toda = []
                 for item in grade_aulas:
-                    if item['materia'].strip() == mat_nome:
+                    if normalizar_texto(item['materia']) == normalizar_texto(mat_nome):
                         turma = item['turma']
                         aulas_dia = turmas_totais[turma] // 5
                         for aula in range(aulas_dia):
@@ -565,6 +590,7 @@ with col_btn:
 uploaded_file = st.file_uploader("📂 Arraste o arquivo matriz.xlsx aqui", type=["xlsx"], label_visibility="collapsed")
 
 if uploaded_file is not None:
+    # Chama a função agora "cacheada"
     turmas_totais, grade_aulas, dias_semana, bloqueios_globais = carregar_dados(uploaded_file)
     
     if turmas_totais:
@@ -619,7 +645,7 @@ if uploaded_file is not None:
                     dias_semana, 
                     bloqueios_globais, 
                     materias_para_agrupar=materias_selecionadas,
-                    mapa_aulas_vagas=mapa_aulas_vagas_user # Passa o dicionário novo
+                    mapa_aulas_vagas=mapa_aulas_vagas_user
                 )
                 
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
