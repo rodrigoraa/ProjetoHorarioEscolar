@@ -561,6 +561,29 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
 
     return status, solver, horario, audit_penalties
 
+# ==========================================
+# INTERFACE PRINCIPAL (Adicione isso ao final do código)
+# ==========================================
+
+st.title("🧩 Gerador de Horários Escolar")
+st.markdown("---")
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.info("Primeira vez aqui?")
+    modelo_excel = gerar_modelo_exemplo()
+    st.download_button(
+        label="📥 Baixar Planilha Modelo",
+        data=modelo_excel,
+        file_name="Modelo_Horario_Escolar.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+# --- AQUI ESTAVA O PROBLEMA: FALTAVA ESTA LINHA ---
+uploaded_file = st.file_uploader("Faça upload da sua planilha preenchida (.xlsx)", type=['xlsx'])
+
 if uploaded_file is not None:
     # Chama a função agora "cacheada"
     turmas_totais, grade_aulas, dias_semana, bloqueios_globais = carregar_dados(uploaded_file)
@@ -638,7 +661,7 @@ if uploaded_file is not None:
                         mime="application/pdf"
                     )
                 else:
-                    st.error("Não foi possível gerar um horário com essas restrições.")
+                    st.error("Não foi possível gerar um horário com essas restrições. Tente aumentar a disponibilidade dos professores.")
         else:
             st.error("🚫 O BOTÃO DE GERAR ESTÁ BLOQUEADO.")
             st.warning("Motivo: Existem professores com 'Saldo Negativo'.")
