@@ -160,7 +160,7 @@ def carregar_dados(arquivo_upload):
         except: aulas = 0
             
         turmas_alvo = str(row['Turmas_Alvo']).split(',')
-        
+            
         if prof not in bloqueios_globais:
             bloqueios_globais[prof] = set()
 
@@ -655,33 +655,33 @@ if uploaded_file is not None:
             st.write("---")
 
             # --- BOTÃO DE AÇÃO ---
-if st.button("🚀 Gerar Horário Agora", type="primary", use_container_width=True):
-    with st.spinner('🤖 Construindo modelo matemático e calculando (Isso pode demorar)...'):
-        try:
-            status, vars_resolvidas, custo, detalhes_penal = resolver_horario(
-                turmas_totais,
-                grade_aulas,
-                dias_semana,
-                bloqueios_globais,
-                materias_para_agrupar=materias_para_agrupar,  # 👈 AQUI
-                mapa_aulas_vagas=mapa_aulas_vagas_user
-            )
+            if st.button("🚀 Gerar Horário Agora", type="primary", use_container_width=True):
+                with st.spinner('🤖 Construindo modelo matemático e calculando (Isso pode demorar)...'):
+                    try:
+                        status, vars_resolvidas, custo, detalhes_penal = resolver_horario(
+                            turmas_totais,
+                            grade_aulas,
+                            dias_semana,
+                            bloqueios_globais,
+                            materias_para_agrupar=materias_para_agrupar,  # 👈 AQUI
+                            mapa_aulas_vagas=mapa_aulas_vagas_user
+                        )
 
-            if status == "OK":
-                # Salva na memória do Streamlit
-                st.session_state['resultado_otimizacao'] = {
-                    'vars': vars_resolvidas,
-                    'custo': custo,
-                    'detalhes': detalhes_penal,
-                    'grade': grade_aulas,  # snapshot
-                    'turmas': turmas_totais
-                }
-                st.rerun()  # Recarrega a página para mostrar resultados
-            else:
-                st.error("Não foi possível gerar um horário viável. Tente relaxar as restrições.")
-        except Exception as e:
-            st.error(f"Erro Crítico no motor de cálculo: {e}")
-            st.write("Verifique se instalou o OR-Tools: `pip install ortools`")
+                        if status == "OK":
+                            # Salva na memória do Streamlit
+                            st.session_state['resultado_otimizacao'] = {
+                                'vars': vars_resolvidas,
+                                'custo': custo,
+                                'detalhes': detalhes_penal,
+                                'grade': grade_aulas,  # snapshot
+                                'turmas': turmas_totais
+                            }
+                            st.rerun()  # Recarrega a página para mostrar resultados
+                        else:
+                            st.error("Não foi possível gerar um horário viável. Tente relaxar as restrições.")
+                    except Exception as e:
+                        st.error(f"Erro Crítico no motor de cálculo: {e}")
+                        st.write("Verifique se instalou o OR-Tools: `pip install ortools`")
 
 # --- EXIBIÇÃO DE RESULTADOS (FORA DO BOTÃO) ---
 if st.session_state['resultado_otimizacao']:
