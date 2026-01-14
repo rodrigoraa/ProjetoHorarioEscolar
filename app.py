@@ -377,8 +377,14 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, vars_resolvidas, grade_a
 # ==========================================
 # MOTOR DE OTIMIZAÇÃO (SOLVER)
 # ==========================================
-def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
-                     materias_para_agrupar=[], mapa_aulas_vagas={}):
+def resolver_horario(
+    turmas_totais,
+    grade_aulas,
+    dias_semana,
+    bloqueios_globais,
+    materias_para_agrupar=[],
+    mapa_aulas_vagas={}
+):
 
     model = cp_model.CpModel()
     horario_vars = {}
@@ -415,12 +421,15 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     # =========================
     # HARD CONSTRAINTS
     # =========================
+    # Turma só pode ter uma aula por horário
     for vars_list in mapa_turma_horario.values():
         model.Add(sum(vars_list) <= 1)
 
+    # Professor só pode estar em um lugar por horário
     for vars_list in mapa_prof_horario.values():
         model.Add(sum(vars_list) <= 1)
 
+    # Quantidade exata de aulas por (prof, matéria, turma)
     for item in grade_aulas:
         vars_materia = []
         turma, prof, materia = item['turma'], item['prof'], item['materia']
@@ -428,19 +437,22 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
 
         for d in range(len(dias_semana)):
             for a in range(aulas_dia):
-                vars_materia.append(horario_vars[(turma, d, a, prof, materia)])
+                vars_materia.append(
+                    horario_vars[(turma, d, a, prof, materia)]
+                )
 
         model.Add(sum(vars_materia) == item['qtd'])
 
+    # Indisponibilidade de professores
     for prof, bloqueios in bloqueios_globais.items():
         for d, a in bloqueios:
             for var in mapa_prof_horario.get((prof, d, a), []):
                 model.Add(var == 0)
 
     # =========================
-    # SOFT CONSTRAINT ⭐ NOVA
-    # EVITAR MESMO PROFESSOR
-    # NA MESMA TURMA NO MESMO DIA
+    # SOFT CONSTRAINT
+    # Evitar mesmo professor
+    # na mesma turma no mesmo dia
     # =========================
     PESO_REPETICAO_MESMO_DIA = 200
 
@@ -451,20 +463,70 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 if not vars_dia:
                     continue
 
-                total_no_dia = model.NewIntVar(0, max_aulas_escola, f"total_{turma}_{prof}_{d}")
+                total_no_dia = model.NewIntVar(
+                    0, max_aulas_escola, f"total_{turma}_{prof}_{d}"
+                )
                 model.Add(total_no_dia == sum(vars_dia))
 
-                excesso = model.NewIntVar(0, max_aulas_escola, f"excesso_{turma}_{prof}_{d}")
+                excesso = model.NewIntVar(
+                    0, max_aulas_escola, f"excesso_{turma}_{prof}_{d}"
+                )
                 model.Add(excesso >= total_no_dia - 1)
                 model.Add(excesso >= 0)
 
                 termos_custo.append(excesso * PESO_REPETICAO_MESMO_DIA)
                 detalhes_audit.append({
-                    "tipo": "Repetição no mesmo dia",
+                    "tipo": "Repetição na mesma turma",
                     "desc": f"{prof} na {turma} ({dias_semana[d]})",
                     "var": excesso,
                     "peso": PESO_REPETICAO_MESMO_DIA
                 })
+
+    # =========================
+    # SOFT CONSTRAINT ⭐ NOVA
+    # EVITAR CONCENTRAÇÃO EXCESSIVA
+    # DE AULAS DO PROFESSOR NO DIA
+    # =========================
+    PESO_EXCESSO_DIARIO = 250
+    LIMITE_SUAVE_DIARIO = 4  # até 4 aulas no dia é aceitável
+
+    for prof in set(item['prof'] for item in grade_aulas):
+
+        for d in range(len(dias_semana)):
+            vars_dia = []
+
+            for item in grade_aulas:
+                if item['prof'] == prof:
+                    turma = item['turma']
+                    materia = item['materia']
+                    aulas_dia = aulas_por_turma_idx[turma]
+
+                    for a in range(aulas_dia):
+                        chave = (turma, d, a, prof, materia)
+                        if chave in horario_vars:
+                            vars_dia.append(horario_vars[chave])
+
+            if not vars_dia:
+                continue
+
+            total_dia = model.NewIntVar(
+                0, max_aulas_escola, f"total_{prof}_{d}"
+            )
+            model.Add(total_dia == sum(vars_dia))
+
+            excesso = model.NewIntVar(
+                0, max_aulas_escola, f"excesso_prof_{prof}_{d}"
+            )
+            model.Add(excesso >= total_dia - LIMITE_SUAVE_DIARIO)
+            model.Add(excesso >= 0)
+
+            termos_custo.append(excesso * PESO_EXCESSO_DIARIO)
+            detalhes_audit.append({
+                "tipo": "Concentração excessiva",
+                "desc": f"{prof} com muitas aulas em {dias_semana[d]}",
+                "var": excesso,
+                "peso": PESO_EXCESSO_DIARIO
+            })
 
     # =========================
     # OBJETIVO
@@ -482,6 +544,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     auditoria = []
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+
         for k, v in horario_vars.items():
             if solver.Value(v) == 1:
                 resultados[k] = 1
@@ -501,6 +564,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
         return "OK", resultados, solver.ObjectiveValue(), auditoria
 
     return "ERRO", {}, 0, []
+
 
 # ==========================================
 # APP PRINCIPAL (EXECUÇÃO)
@@ -543,8 +607,14 @@ if uploaded_file is not None:
             st.markdown("### 2. Configurações")
             
             with st.expander("⚙️ Configurações Avançadas", expanded=True):
+                
+                # =========================
+                # AULAS VAGAS (HORA-ATIVIDADE)
+                # =========================
                 st.markdown("#### ⏳ Aulas Vagas (Hora-Atividade)")
-                lista_profs = sorted(list(set([g['prof'] for g in grade_aulas])))
+                
+                lista_profs = sorted(list(set(g['prof'] for g in grade_aulas)))
+                
                 df_vagas = pd.DataFrame({
                     "Professor": lista_profs,
                     "Aulas Vagas": [0] * len(lista_profs)
@@ -560,58 +630,77 @@ if uploaded_file is not None:
                     hide_index=True,
                     use_container_width=True
                 )
-                mapa_aulas_vagas_user = dict(zip(df_editado["Professor"], df_editado["Aulas Vagas"]))
+                
+                mapa_aulas_vagas_user = dict(
+                    zip(df_editado["Professor"], df_editado["Aulas Vagas"])
+                )
+
+                # =========================
+                # MATÉRIAS NO MESMO DIA
+                # =========================
+                st.markdown("#### 🔗 Matérias que devem ocorrer no MESMO DIA")
+
+                lista_materias = sorted(list(set(g['materia'] for g in grade_aulas)))
+
+                materias_mesmo_dia = st.multiselect(
+                    "Selecione matérias que devem acontecer no mesmo dia da semana",
+                    options=lista_materias,
+                    help="Exemplo: Artes e Ed. Física"
+                )
+
+                materias_para_agrupar = []
+                if len(materias_mesmo_dia) >= 2:
+                    materias_para_agrupar.append(materias_mesmo_dia)
 
             st.write("---")
-            
-            # --- BOTÃO DE AÇÃO ---
-            if st.button("🚀 Gerar Horário Agora", type="primary", use_container_width=True):
-                with st.spinner('🤖 Construindo modelo matemático e calculando (Isso pode demorar)...'):
-                    try:
-                        status, vars_resolvidas, custo, detalhes_penal = resolver_horario(
-                            turmas_totais, 
-                            grade_aulas, 
-                            dias_semana, 
-                            bloqueios_globais, 
-                            mapa_aulas_vagas=mapa_aulas_vagas_user
-                        )
-                        
-                        if status == "OK":
-                            # Salva na memória do Streamlit
-                            st.session_state['resultado_otimizacao'] = {
-                                'vars': vars_resolvidas,
-                                'custo': custo,
-                                'detalhes': detalhes_penal,
-                                'grade': grade_aulas, # Salva snapshot dos dados usados
-                                'turmas': turmas_totais
-                            }
-                            st.rerun() # Recarrega a página para mostrar resultados
-                        else:
-                            st.error("Não foi possível gerar um horário viável. Tente relaxar as restrições.")
-                    except Exception as e:
-                        st.error(f"Erro Crítico no motor de cálculo: {e}")
-                        st.write("Verifique se instalou o OR-Tools: `pip install ortools`")
 
-            # --- EXIBIÇÃO DE RESULTADOS (FORA DO BOTÃO) ---
-            if st.session_state['resultado_otimizacao']:
-                res = st.session_state['resultado_otimizacao']
-                
-                st.success(f"Horário Gerado com Sucesso! (Custo: {res['custo']})")
-                
-                # Só exibe se os dados na tela ainda baterem com o resultado (evita erro se trocar arquivo)
-                if res['turmas'].keys() == turmas_totais.keys():
-                    exibir_detalhes_custo(res['detalhes'])
-                    exibir_estatisticas(res['grade'], dias_semana, res['vars'])
-                    exibir_horarios_na_tela(res['turmas'], dias_semana, res['vars'], res['grade'])
-                    
-                    pdf_bytes = gerar_pdf_bytes(res['turmas'], res['grade'], dias_semana, res['vars'])
-                    st.download_button(
-                        label="📥 Baixar PDF Final",
-                        data=pdf_bytes,
-                        file_name="Horario_Escolar_Final.pdf",
-                        mime="application/pdf"
-                    )
-                else:
-                    st.warning("⚠️ Os dados do arquivo mudaram. Gere o horário novamente.")
-        else:
-            st.error("🚫 BOTÃO TRAVADO: Verifique o saldo negativo na tabela acima.")
+            # --- BOTÃO DE AÇÃO ---
+if st.button("🚀 Gerar Horário Agora", type="primary", use_container_width=True):
+    with st.spinner('🤖 Construindo modelo matemático e calculando (Isso pode demorar)...'):
+        try:
+            status, vars_resolvidas, custo, detalhes_penal = resolver_horario(
+                turmas_totais,
+                grade_aulas,
+                dias_semana,
+                bloqueios_globais,
+                materias_para_agrupar=materias_para_agrupar,  # 👈 AQUI
+                mapa_aulas_vagas=mapa_aulas_vagas_user
+            )
+
+            if status == "OK":
+                # Salva na memória do Streamlit
+                st.session_state['resultado_otimizacao'] = {
+                    'vars': vars_resolvidas,
+                    'custo': custo,
+                    'detalhes': detalhes_penal,
+                    'grade': grade_aulas,  # snapshot
+                    'turmas': turmas_totais
+                }
+                st.rerun()  # Recarrega a página para mostrar resultados
+            else:
+                st.error("Não foi possível gerar um horário viável. Tente relaxar as restrições.")
+        except Exception as e:
+            st.error(f"Erro Crítico no motor de cálculo: {e}")
+            st.write("Verifique se instalou o OR-Tools: `pip install ortools`")
+
+# --- EXIBIÇÃO DE RESULTADOS (FORA DO BOTÃO) ---
+if st.session_state['resultado_otimizacao']:
+    res = st.session_state['resultado_otimizacao']
+
+    st.success(f"Horário Gerado com Sucesso! (Custo: {res['custo']})")
+
+    # Só exibe se os dados ainda baterem
+    if res['turmas'].keys() == turmas_totais.keys():
+        exibir_detalhes_custo(res['detalhes'])
+        exibir_estatisticas(res['grade'], dias_semana, res['vars'])
+        exibir_horarios_na_tela(res['turmas'], dias_semana, res['vars'], res['grade'])
+
+        pdf_bytes = gerar_pdf_bytes(res['turmas'], res['grade'], dias_semana, res['vars'])
+        st.download_button(
+            label="📥 Baixar PDF Final",
+            data=pdf_bytes,
+            file_name="Horario_Escolar_Final.pdf",
+            mime="application/pdf"
+        )
+    else:
+        st.warning("⚠️ Os dados do arquivo mudaram. Gere o horário novamente.")
