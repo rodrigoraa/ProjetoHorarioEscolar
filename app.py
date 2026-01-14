@@ -14,10 +14,9 @@ from ortools.sat.python import cp_model
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
 
 # ==========================================
-#  FUNÇÕES AUXILIARES (NORMALIZAÇÃO)
+#  FUNÇÕES AUXILIARES
 # ==========================================
 def normalizar_texto(texto):
-    """Remove acentos e espaços extras para comparação segura."""
     if not isinstance(texto, str):
         texto = str(texto)
     return unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII').strip().lower()
@@ -74,7 +73,7 @@ def gerar_modelo_exemplo():
     return output.getvalue()
 
 # ==========================================
-# SISTEMA DE LOGIN (SEGURO PARA LOCALHOST)
+# SISTEMA DE LOGIN
 # ==========================================
 def login_system():
     if st.session_state.get("logged_in", False):
@@ -96,9 +95,7 @@ def login_system():
         password_input = st.text_input("🔑 Senha", type="password")
         
         if st.button("Entrar"):
-            # .get() evita erro se 'users' não existir nos secrets locais
             users_db = st.secrets.get("users", {})
-            
             if username_input in users_db:
                 if hmac.compare_digest(users_db[username_input], password_input):
                     st.session_state["logged_in"] = True
@@ -122,7 +119,7 @@ if not login_system():
     st.stop()
 
 # ==========================================
-# LÓGICA DO SISTEMA (COM CACHE E VALIDAÇÃO)
+# LÓGICA DO SISTEMA
 # ==========================================
 
 @st.cache_data(ttl=3600, show_spinner="Lendo arquivo Excel...")
@@ -131,7 +128,6 @@ def carregar_dados(arquivo_upload):
         df_turmas = pd.read_excel(arquivo_upload, sheet_name='Turmas')
         df_grade = pd.read_excel(arquivo_upload, sheet_name='Grade_Curricular')
         
-        # Validação de Colunas Básicas
         cols_obrigatorias_grade = {'Professor', 'Materia', 'Turmas_Alvo', 'Aulas_Por_Turma'}
         if not cols_obrigatorias_grade.issubset(df_grade.columns):
             st.error(f"Erro: A planilha Grade_Curricular deve conter as colunas: {cols_obrigatorias_grade}")
@@ -157,7 +153,6 @@ def carregar_dados(arquivo_upload):
 
     for _, row in df_grade.iterrows():
         prof_raw = str(row['Professor'])
-        # Normalização simples para exibição, mas mantemos o ID consistente
         prof = prof_raw.lower().replace('prof.', '').replace('profª', '').replace('profa', '').strip().title()
         materia = str(row['Materia']).strip()
         
@@ -193,7 +188,6 @@ def carregar_dados(arquivo_upload):
 
         for t_raw in turmas_alvo:
             turma = t_raw.strip()
-            # Validação: Só adiciona se a turma existir na aba Turmas
             if turma in turmas_totais:
                 grade_aulas.append({'prof': prof, 'materia': materia, 'turma': turma, 'qtd': aulas})
     
@@ -208,7 +202,7 @@ def verificar_capacidade(grade_aulas, bloqueios_globais):
         carga_prof[p] += item['qtd']
 
     erros_fatais = False
-    max_slots_semana = 30 # Assumindo 6 tempos x 5 dias como teto físico
+    max_slots_semana = 30
     logs = []
     
     for prof, carga_total in carga_prof.items():
@@ -328,8 +322,6 @@ def exibir_detalhes_custo(solver, audit_penalties):
             
     if detalhes:
         df_detalhes = pd.DataFrame(detalhes)
-        
-        # Agrupamento por Tipo para resumo
         resumo = df_detalhes.groupby("Tipo de Penalidade")["Custo Gerado"].sum().reset_index()
         
         col1, col2 = st.columns(2)
@@ -340,7 +332,7 @@ def exibir_detalhes_custo(solver, audit_penalties):
             st.write("DETALHE INDIVIDUAL:")
             st.dataframe(df_detalhes[["Tipo de Penalidade", "Descrição", "Custo Gerado"]], use_container_width=True)
             
-        st.info(f"O custo total de **{custo_total_calculado}** significa que o solver teve que quebrar essas preferências acima para conseguir fechar o horário.")
+        st.info(f"O custo total de **{custo_total_calculado}** significa que o solver precisou quebrar preferências para conseguir fechar o horário.")
     else:
         st.success("Custo Zero! O horário é perfeito e atende todas as preferências.")
 
@@ -398,13 +390,13 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
             st.dataframe(pd.DataFrame(dados_grade), use_container_width=True)
 
 # ==========================================
-# LÓGICA DO SOLVER (CORRIGIDA: INT + SEM ANTI-JANELA)
+# LÓGICA DO SOLVER (AGORA COM PUNIÇÃO PARA TRIPLAS)
 # ==========================================
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[], mapa_aulas_vagas={}):
     model = cp_model.CpModel()
     horario = {}
     
-    # Lista para guardar o "motivo" das penalidades
+    # Lista para auditoria
     audit_penalties = [] 
 
     # --- Variáveis ---
@@ -509,8 +501,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     # ==========================================
     todas_penalidades = []
 
-    # 1. EVITAR AULAS CONSECUTIVAS (NOVA LÓGICA) - Peso 10
-    # O objetivo agora é espalhar. Se tiver aula na hora X e hora X+1, penaliza.
+    # 1. EVITAR DOBRADINHAS E TRIPLAS (MESMA TURMA)
+    # AQUI ESTA A CORREÇÃO: Penalidade separada e severa para 3 aulas seguidas.
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -518,40 +510,66 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
         aulas_por_dia = turmas_totais[turma] // 5
         
         for d in range(len(dias_semana)):
-            # Itera pelas aulas do dia, olhando sempre a atual e a próxima
+            # A) Evitar Dobradinhas (Aula X e X+1) - Peso 10
             for aula in range(aulas_por_dia - 1):
                 chave_atual = (turma, d, aula, prof, materia)
-                chave_proxima = (turma, d, aula + 1, prof, materia)
+                chave_prox = (turma, d, aula + 1, prof, materia)
                 
-                if chave_atual in horario and chave_proxima in horario:
-                    var_atual = horario[chave_atual]
-                    var_proxima = horario[chave_proxima]
+                if chave_atual in horario and chave_prox in horario:
+                    var_a = horario[chave_atual]
+                    var_b = horario[chave_prox]
                     
-                    # Cria variável de penalidade: será 1 se ambas as aulas forem preenchidas (1+1=2)
-                    eh_consecutivo = model.NewBoolVar(f'consec_{turma}_{d}_{aula}_{prof}')
+                    eh_dobra = model.NewBoolVar(f'dobra_{turma}_{d}_{aula}_{prof}')
+                    model.Add(var_a + var_b <= 1 + eh_dobra)
                     
-                    # Se soma for 2, eh_consecutivo TEM que ser 1.
-                    # Se soma for 0 ou 1, eh_consecutivo pode ser 0.
-                    model.Add(var_atual + var_proxima <= 1 + eh_consecutivo)
+                    # Peso 10
+                    for _ in range(10): todas_penalidades.append(eh_dobra)
                     
-                    # Adiciona penalidade pesada (Peso 10) para evitar dobradinha
-                    for _ in range(10): todas_penalidades.append(eh_consecutivo)
-                    
-                    # AUDITORIA
                     audit_penalties.append({
-                        'tipo': 'Dobradinha (Aulas Seguidas)',
-                        'desc': f'{materia} na {turma} ({dias_semana[d]} aulas {aula+1} e {aula+2})',
-                        'var': eh_consecutivo,
+                        'tipo': 'Dobradinha (2 aulas)',
+                        'desc': f'{materia} na {turma} ({dias_semana[d]} - Aulas {aula+1} e {aula+2})',
+                        'var': eh_dobra,
                         'peso': 10
                     })
-            
-            # (Opcional) Limite global de 2 aulas por dia para não acumular mesmo separadas
-            vars_dia = []
-            for aula in range(aulas_por_dia):
-                chave = (turma, d, aula, prof, materia)
-                if chave in horario: vars_dia.append(horario[chave])
-            if vars_dia:
-                model.Add(sum(vars_dia) <= 2) # Máximo rígido de 2 aulas no mesmo dia
+
+            # B) Evitar Triplas (Aula X, X+1 e X+2) - Peso 50 (MUITO ALTO)
+            # Isso garante que ele pague MUITO caro se tentar colocar 3 seguidas.
+            for aula in range(aulas_por_dia - 2):
+                chave_1 = (turma, d, aula, prof, materia)
+                chave_2 = (turma, d, aula + 1, prof, materia)
+                chave_3 = (turma, d, aula + 2, prof, materia)
+                
+                if chave_1 in horario and chave_2 in horario and chave_3 in horario:
+                    var_1 = horario[chave_1]
+                    var_2 = horario[chave_2]
+                    var_3 = horario[chave_3]
+                    
+                    eh_tripla = model.NewBoolVar(f'tripla_{turma}_{d}_{aula}_{prof}')
+                    
+                    # Se soma for 3, eh_tripla tem que ser 1.
+                    # Se soma for < 3, eh_tripla pode ser 0.
+                    # Lógica: (v1 + v2 + v3) <= 2 + eh_tripla
+                    # Se v1=1, v2=1, v3=1 -> 3 <= 2 + eh_tripla -> eh_tripla = 1
+                    model.Add(var_1 + var_2 + var_3 <= 2 + eh_tripla)
+                    
+                    # Peso 50 (5x pior que dobradinha)
+                    for _ in range(50): todas_penalidades.append(eh_tripla)
+                    
+                    audit_penalties.append({
+                        'tipo': 'TRIPLA (3 aulas seguidas!)',
+                        'desc': f'{materia} na {turma} ({dias_semana[d]} - Aulas {aula+1}, {aula+2}, {aula+3})',
+                        'var': eh_tripla,
+                        'peso': 50
+                    })
+
+            # C) Limite Rígido de 2 aulas no dia (Opcional, se quiser PROIBIR mesmo que separadas)
+            # Descomente abaixo se quiser que seja IMPOSSÍVEL ter 3 aulas no mesmo dia, mesmo separadas.
+            # vars_dia = []
+            # for aula in range(aulas_por_dia):
+            #     chave = (turma, d, aula, prof, materia)
+            #     if chave in horario: vars_dia.append(horario[chave])
+            # if vars_dia:
+            #     model.Add(sum(vars_dia) <= 2) 
 
     # 2. AGRUPAMENTO GLOBAL (Sincronia) - Peso 10
     if len(materias_para_agrupar) > 1:
@@ -606,6 +624,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                              vars_prof_dia.append(horario[chave])
 
             if vars_prof_dia:
+                # Excesso de Carga (>5 aulas no dia)
                 excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
                 model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
                 for _ in range(5): todas_penalidades.append(excesso_carga)
@@ -616,6 +635,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                     'peso': 5
                 })
 
+                # Aula Isolada (Apenas 1 aula)
                 eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
                 model.Add(sum(vars_prof_dia) == 1).OnlyEnforceIf(eh_um)
                 model.Add(sum(vars_prof_dia) != 1).OnlyEnforceIf(eh_um.Not())
