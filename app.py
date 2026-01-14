@@ -407,163 +407,144 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     horario = {}
     audit_penalties = [] 
 
-    # --- 1. CRIAÇÃO DE VARIÁVEIS (Garante unicidade) ---
-    # Primeiro mapeamos quais turmas tem quais aulas
+    # MAPAS AUXILIARES (O Segredo para não ter choque)
+    # Em vez de procurar toda hora, vamos guardar as variáveis aqui
+    # Chave: (Turma, Dia, Aula) -> Lista de variáveis naquele horário
+    mapa_turma_horario = {} 
+    # Chave: (Prof, Dia, Aula) -> Lista de variáveis naquele horário
+    mapa_prof_horario = {}
+
+    # --- 1. CRIAÇÃO DE VARIÁVEIS E PREENCHIMENTO DOS MAPAS ---
     aulas_por_turma_idx = {t: t_val // 5 for t, t_val in turmas_totais.items()}
-    max_aulas_escola = max(aulas_por_turma_idx.values())
+    max_aulas_escola = max(aulas_por_turma_idx.values()) if aulas_por_turma_idx else 5
 
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
         materia = item['materia']
-        aulas_dia = aulas_por_turma_idx[turma]
+        aulas_dia = aulas_por_turma_idx.get(turma, 5)
         
         for d in range(len(dias_semana)):
             for aula in range(aulas_dia):
-                chave = (turma, d, aula, prof, materia)
-                # Verifica se a chave já existe para não sobrescrever (embora carregar_dados já trate)
-                if chave not in horario:
-                    horario[chave] = model.NewBoolVar(f'H_{turma}_{d}_{aula}_{prof}_{materia}')
+                chave_var = (turma, d, aula, prof, materia)
+                
+                # Cria a variável
+                var = model.NewBoolVar(f'H_{turma}_{d}_{aula}_{prof}_{materia}')
+                horario[chave_var] = var
 
-    # --- R1: CHOQUE DE TURMA (Apenas 1 aula por horário na turma) ---
-    for turma in turmas_totais:
-        aulas_dia = aulas_por_turma_idx[turma]
-        for d in range(len(dias_semana)):
-            for aula in range(aulas_dia):
-                vars_neste_slot = []
-                for item in grade_aulas:
-                    if item['turma'] == turma:
-                        chave = (turma, d, aula, item['prof'], item['materia'])
-                        if chave in horario:
-                            vars_neste_slot.append(horario[chave])
-                if vars_neste_slot:
-                    model.Add(sum(vars_neste_slot) <= 1)
+                # MAPA DA TURMA: Guarda essa variável no slot da turma
+                chave_t_slot = (turma, d, aula)
+                if chave_t_slot not in mapa_turma_horario: mapa_turma_horario[chave_t_slot] = []
+                mapa_turma_horario[chave_t_slot].append(var)
 
-    # --- R2: CHOQUE DE PROFESSOR (Professor não pode estar em 2 lugares) ---
-    todos_professores = set(item['prof'] for item in grade_aulas)
-    for d in range(len(dias_semana)):
-        for aula in range(max_aulas_escola):
-            for prof in todos_professores:
-                vars_do_prof = []
-                # Varre todas as turmas onde esse prof dá aula
-                for item in grade_aulas:
-                    if item['prof'] == prof:
-                        chave = (item['turma'], d, aula, prof, item['materia'])
-                        if chave in horario:
-                            vars_do_prof.append(horario[chave])
-                if len(vars_do_prof) > 1:
-                    model.Add(sum(vars_do_prof) <= 1)
+                # MAPA DO PROFESSOR: Guarda essa variável no slot do professor
+                chave_p_slot = (prof, d, aula)
+                if chave_p_slot not in mapa_prof_horario: mapa_prof_horario[chave_p_slot] = []
+                mapa_prof_horario[chave_p_slot].append(var)
+
+    # --- R1: CHOQUE DE TURMA (BLINDADO) ---
+    # Uma turma só pode ter 1 aula por tempo, não importa a matéria ou professor
+    for chave_slot, lista_vars in mapa_turma_horario.items():
+        if len(lista_vars) > 1:
+            model.Add(sum(lista_vars) <= 1)
+
+    # --- R2: CHOQUE DE PROFESSOR (BLINDADO) ---
+    # Um professor só pode estar em 1 lugar, mesmo que dê matérias diferentes
+    for chave_slot, lista_vars in mapa_prof_horario.items():
+        if len(lista_vars) > 1:
+            model.Add(sum(lista_vars) <= 1)
 
     # --- R3: QUANTIDADE DE AULAS (Exata) ---
     for item in grade_aulas:
-        vars_materia = []
+        vars_da_materia = []
         turma = item['turma']
         prof = item['prof']
         materia = item['materia']
-        aulas_dia = aulas_por_turma_idx[turma]
+        aulas_dia = aulas_por_turma_idx.get(turma, 5)
         
         for d in range(len(dias_semana)):
             for aula in range(aulas_dia):
                 chave = (turma, d, aula, prof, materia)
                 if chave in horario:
-                    vars_materia.append(horario[chave])
+                    vars_da_materia.append(horario[chave])
         
-        if vars_materia:
-            model.Add(sum(vars_materia) == item['qtd'])
+        if vars_da_materia:
+            model.Add(sum(vars_da_materia) == item['qtd'])
 
     # --- R4: INDISPONIBILIDADE ---
     for prof, bloqueios in bloqueios_globais.items():
         for (d, aula) in bloqueios:
-            for item in grade_aulas:
-                if item['prof'] == prof:
-                    chave = (item['turma'], d, aula, prof, item['materia'])
-                    if chave in horario:
-                        model.Add(horario[chave] == 0)
+            # Pega todas as variáveis desse professor nesse dia/aula usando o mapa
+            chave_p_slot = (prof, d, aula)
+            if chave_p_slot in mapa_prof_horario:
+                for var in mapa_prof_horario[chave_p_slot]:
+                    model.Add(var == 0)
 
-    # --- R5: LIMITE DIÁRIO / AULAS VAGAS ---
-    # (Código mantido similar, omitido para brevidade pois estava correto)
-    
     # ==========================================
-    # OBJETIVOS E PENALIDADES (PESOS REAJUSTADOS)
+    # OBJETIVOS E PENALIDADES (JANELAS E ISOLADAS)
     # ==========================================
     todas_penalidades = []
-
-    # 1. DOBRADINHAS IDEAIS (Ganha pontos se juntar aulas)
-    # Estratégia inversa: Penaliza se aula X e aula X+1 forem diferentes para a mesma matéria
-    # Implementação simplificada: Penaliza 'solteiras' que poderiam ser duplas
     
-    # Vamos focar no que o usuário reclamou: CUSTOS.
-    
+    # Lista única de professores
+    todos_professores = set(item['prof'] for item in grade_aulas)
     professores_lista = sorted(list(todos_professores))
     
     for prof in professores_lista:
         for d in range(len(dias_semana)):
-            # Coleta todas as variáveis booleanas desse professor neste dia (independente da turma)
-            vars_prof_dia_map = {} # map: aula_idx -> var_bool (soma de todas as turmas naquele slot)
-            
-            for aula in range(max_aulas_escola):
-                vars_slot = []
-                for item in grade_aulas:
-                    if item['prof'] == prof:
-                        chave = (item['turma'], d, aula, prof, item['materia'])
-                        if chave in horario:
-                            vars_slot.append(horario[chave])
-                
-                # Cria uma variável intermediária que é 1 se o prof trabalha nesta aula, 0 se não
-                if vars_slot:
-                    trabalha_nesta_aula = model.NewBoolVar(f'Trab_{prof}_{d}_{aula}')
-                    model.Add(sum(vars_slot) == trabalha_nesta_aula)
-                    vars_prof_dia_map[aula] = trabalha_nesta_aula
-                else:
-                    # Se não tem aula cadastrada, é 0
-                    vars_prof_dia_map[aula] = model.NewConstant(0)
+            # Cria variáveis auxiliares para indicar se o prof trabalha na aula X
+            trabalha_no_slot = {} # map: aula_idx -> BoolVar
 
-            # A) PENALIDADE DE JANELAS (GAPS) - PESO 50
-            # Ex: Aula 1 (Sim), Aula 2 (Não), Aula 3 (Sim)
-            for aula in range(max_aulas_escola - 2):
-                v1 = vars_prof_dia_map[aula]
-                v2 = vars_prof_dia_map[aula+1]
-                v3 = vars_prof_dia_map[aula+2]
+            for aula in range(max_aulas_escola):
+                chave_p_slot = (prof, d, aula)
+                vars_neste_slot = mapa_prof_horario.get(chave_p_slot, [])
                 
-                # Janela detectada se v1=1, v2=0, v3=1
+                if vars_neste_slot:
+                    # Se tiver qualquer aula (Português OU Redação), conta como ocupado
+                    ocupado = model.NewBoolVar(f'Ocupado_{prof}_{d}_{aula}')
+                    model.Add(sum(vars_neste_slot) == ocupado)
+                    trabalha_no_slot[aula] = ocupado
+                else:
+                    trabalha_no_slot[aula] = model.NewConstant(0)
+
+            # A) PENALIDADE DE JANELAS (GAPS) - PESO 500 (MUITO ALTO)
+            # Aula (Sim) -> Vago (Sim) -> Aula (Sim)
+            for aula in range(max_aulas_escola - 2):
+                v1 = trabalha_no_slot[aula]
+                v2 = trabalha_no_slot[aula+1]
+                v3 = trabalha_no_slot[aula+2]
+                
                 eh_janela = model.NewBoolVar(f'janela_{prof}_{d}_{aula}')
-                # Lógica: eh_janela >= v1 - v2 + v3 - 1 (Soma > 1 apenas se 1,0,1)
-                # Forma mais segura com boolvar:
+                # v1=1 E v2=0 E v3=1  ==> Janela
                 model.AddBoolAnd([v1, v2.Not(), v3]).OnlyEnforceIf(eh_janela)
                 model.AddBoolOr([v1.Not(), v2, v3.Not()]).OnlyEnforceIf(eh_janela.Not())
                 
-                for _ in range(50): todas_penalidades.append(eh_janela)
+                for _ in range(500): todas_penalidades.append(eh_janela)
                 audit_penalties.append({
                     'tipo': 'Janela (Buraco no horário)',
                     'desc': f'{prof} na {dias_semana[d]} (Vago na {aula+2}ª aula)',
                     'var': eh_janela,
-                    'peso': 50
+                    'peso': 500
                 })
 
-            # B) AULA ISOLADA (Apenas 1 aula no dia) - PESO 20
-            soma_dia = sum(vars_prof_dia_map.values())
+            # B) AULA ISOLADA (Ir à escola apenas para 1 aula) - PESO 100
+            soma_dia = sum(trabalha_no_slot.values())
             eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
             model.Add(soma_dia == 1).OnlyEnforceIf(eh_um)
             model.Add(soma_dia != 1).OnlyEnforceIf(eh_um.Not())
             
-            for _ in range(20): todas_penalidades.append(eh_um)
+            for _ in range(100): todas_penalidades.append(eh_um)
             audit_penalties.append({
                 'tipo': 'Deslocamento Ruim (Só 1 aula)',
                 'desc': f'{prof} vai à escola na {dias_semana[d]} só para 1 aula',
                 'var': eh_um,
-                'peso': 20
+                'peso': 100
             })
             
-            # C) CARGA EXCESSIVA (> 5 aulas) - PESO 10
+            # C) CARGA EXCESSIVA NO DIA (> 5 aulas) - PESO 10
             excesso = model.NewIntVar(0, 10, f'excesso_{prof}_{d}')
             model.Add(excesso >= soma_dia - 5)
             for _ in range(10): todas_penalidades.append(excesso)
-            audit_penalties.append({
-                    'tipo': 'Carga Pesada (>5 aulas)',
-                    'desc': f'{prof} sobrecarregado na {dias_semana[d]}',
-                    'var': excesso,
-                    'peso': 10
-            })
+            # Não adicionamos ao audit para não poluir se for comum, mas penalizamos
 
     # --- OTIMIZAÇÃO ---
     if todas_penalidades:
@@ -571,7 +552,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 180.0
-    solver.parameters.linearization_level = 0 # Ajuda em alguns casos de bool
+    # Linearization level ajuda o solver a entender lógica booleana complexa
+    solver.parameters.linearization_level = 0 
     
     with st.spinner('🤖 O computador está pensando... (Isso pode levar até 3 minutos)'):
         status = solver.Solve(model)
