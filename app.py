@@ -392,21 +392,28 @@ def resolver_horario(
     termos_custo = []
     detalhes_audit = []
 
+    # Mapas auxiliares para facilitar a busca de variáveis
     mapa_turma_horario = defaultdict(list)
     mapa_prof_horario = defaultdict(list)
     mapa_turma_prof_horario = defaultdict(list)
+    
+    # Mapa reverso para saber quais matérias/profs existem em cada turma
+    # Estrutura: mapa_conteudo_turma[turma] = set((prof, materia))
+    mapa_conteudo_turma = defaultdict(set)
 
     aulas_por_turma_idx = {t: t_val // 5 for t, t_val in turmas_totais.items()}
     max_aulas_escola = max(aulas_por_turma_idx.values()) if aulas_por_turma_idx else 5
 
     # =========================
-    # VARIÁVEIS PRINCIPAIS
+    # 1. CRIAÇÃO DAS VARIÁVEIS
     # =========================
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
         materia = item['materia']
         aulas_dia = aulas_por_turma_idx[turma]
+        
+        mapa_conteudo_turma[turma].add((prof, materia))
 
         for d in range(len(dias_semana)):
             for a in range(aulas_dia):
@@ -419,124 +426,272 @@ def resolver_horario(
                 mapa_turma_prof_horario[(turma, prof, d)].append(var)
 
     # =========================
-    # HARD CONSTRAINTS
+    # 2. HARD CONSTRAINTS (Regras Rígidas)
     # =========================
-    # Turma só pode ter uma aula por horário
+    
+    # A) Colisão de Turma: Uma turma só tem 1 aula por horário
     for vars_list in mapa_turma_horario.values():
         model.Add(sum(vars_list) <= 1)
 
-    # Professor só pode estar em um lugar por horário
+    # B) Colisão de Professor: Professor só em 1 lugar ao mesmo tempo
     for vars_list in mapa_prof_horario.values():
         model.Add(sum(vars_list) <= 1)
 
-    # Quantidade exata de aulas por (prof, matéria, turma)
+    # C) Quantidade de Aulas: Respeitar a grade curricular
     for item in grade_aulas:
         vars_materia = []
         turma, prof, materia = item['turma'], item['prof'], item['materia']
         aulas_dia = aulas_por_turma_idx[turma]
-
         for d in range(len(dias_semana)):
             for a in range(aulas_dia):
-                vars_materia.append(
-                    horario_vars[(turma, d, a, prof, materia)]
-                )
-
+                vars_materia.append(horario_vars[(turma, d, a, prof, materia)])
+        
+        # Se a grade pede X aulas, deve ter exatamente X aulas
         model.Add(sum(vars_materia) == item['qtd'])
 
-    # Indisponibilidade de professores
+    # D) Indisponibilidade Declarada
     for prof, bloqueios in bloqueios_globais.items():
         for d, a in bloqueios:
-            for var in mapa_prof_horario.get((prof, d, a), []):
-                model.Add(var == 0)
+            if (prof, d, a) in mapa_prof_horario:
+                for var in mapa_prof_horario[(prof, d, a)]:
+                    model.Add(var == 0)
 
     # =========================
-    # SOFT CONSTRAINT
-    # Evitar mesmo professor
-    # na mesma turma no mesmo dia
+    # 3. CONSTRAINTS AVANÇADAS (O que faltava)
     # =========================
-    PESO_REPETICAO_MESMO_DIA = 200
+
+    # --- E) JANELAS (Aulas Vagas) ---
+    # Limita o tempo ocioso do professor entre a primeira e a última aula do dia
+    
+    PESO_JANELA_EXTRA = 50  # Penalidade se estourar um pouco (soft) ou Hard se preferir
+
+    # Agrupamos todas as vars de um professor por dia e aula
+    profs_unicos = set(item['prof'] for item in grade_aulas)
+    
+    for prof in profs_unicos:
+        limite_janelas = mapa_aulas_vagas.get(prof, 2) # Padrão 2 se não definido
+        
+        for d in range(len(dias_semana)):
+            # Variáveis que indicam se o prof trabalha na aula 'a' do dia 'd'
+            trabalha_no_horario = [] 
+            
+            # Como as aulas variam por turma, pegamos o maximo global (ex: 5 ou 6 aulas)
+            for a in range(max_aulas_escola):
+                # Soma todas as turmas que esse prof pode estar nesse dia/horario
+                vars_slot = mapa_prof_horario.get((prof, d, a), [])
+                
+                if not vars_slot:
+                    # Se não tem aula nenhuma possível nesse slot, é 0 constante
+                    trabalha_no_horario.append(0)
+                else:
+                    # Cria var booleana: 1 se der aula, 0 se não
+                    var_trab = model.NewBoolVar(f"trab_{prof}_{d}_{a}")
+                    model.Add(sum(vars_slot) == var_trab) # Soma será 0 ou 1
+                    trabalha_no_horario.append(var_trab)
+            
+            # Se o professor não trabalha no dia, janelas = 0. Precisamos tratar isso.
+            tem_aula_dia = model.NewBoolVar(f"tem_aula_{prof}_{d}")
+            model.Add(sum(trabalha_no_horario) > 0).OnlyEnforceIf(tem_aula_dia)
+            model.Add(sum(trabalha_no_horario) == 0).OnlyEnforceIf(tem_aula_dia.Not())
+
+            # Definir Início (primeira aula) e Fim (última aula)
+            inicio = model.NewIntVar(0, max_aulas_escola, f"inicio_{prof}_{d}")
+            fim = model.NewIntVar(0, max_aulas_escola, f"fim_{prof}_{d}")
+            
+            # Restrições para encontrar inicio e fim
+            for idx, var_bin in enumerate(trabalha_no_horario):
+                # Se trabalha no idx, o inicio deve ser <= idx
+                if isinstance(var_bin, int) and var_bin == 0: continue
+                
+                model.Add(inicio <= idx).OnlyEnforceIf(var_bin)
+                model.Add(fim >= idx).OnlyEnforceIf(var_bin)
+            
+            # Span (Duração da estadia na escola) = Fim - Inicio + 1
+            span = model.NewIntVar(0, max_aulas_escola, f"span_{prof}_{d}")
+            model.Add(span == fim - inicio + 1).OnlyEnforceIf(tem_aula_dia)
+            model.Add(span == 0).OnlyEnforceIf(tem_aula_dia.Not())
+            
+            # Janelas = Span - Aulas Dadas
+            # Ex: Aula na 1 e na 3. Span = 3-1+1 = 3. Aulas = 2. Janelas = 1.
+            qtd_janelas = model.NewIntVar(0, max_aulas_escola, f"janelas_{prof}_{d}")
+            
+            # Precisamos somar as variaveis da lista trabalha_no_horario (tratando int 0)
+            soma_aulas = sum(v for v in trabalha_no_horario if not isinstance(v, int) or v != 0)
+            
+            model.Add(qtd_janelas == span - soma_aulas).OnlyEnforceIf(tem_aula_dia)
+            model.Add(qtd_janelas == 0).OnlyEnforceIf(tem_aula_dia.Not())
+
+            # Hard Constraint Relaxada: Se passar do limite, penaliza MUITO forte
+            # Isso evita que o Solver retorne "Impossible" se for matematicamente impossível
+            # mas tenta ao máximo respeitar.
+            excesso_janela = model.NewIntVar(0, max_aulas_escola, f"exc_jan_{prof}_{d}")
+            model.Add(excesso_janela >= qtd_janelas - limite_janelas)
+            model.Add(excesso_janela >= 0) # ReLU
+            
+            PESO_JANELA = 500 # Peso alto para funcionar quase como Hard Constraint
+            termos_custo.append(excesso_janela * PESO_JANELA)
+            
+            detalhes_audit.append({
+                "tipo": "Janelas em Excesso",
+                "desc": f"{prof} excedeu limite de janelas ({dias_semana[d]})",
+                "var": excesso_janela,
+                "peso": PESO_JANELA
+            })
+
+    # --- F) AGRUPAMENTO DE MATÉRIAS (Mesmo Dia) ---
+    # Se Matéria A e B estão no grupo, tentamos forçar que ocorram no mesmo dia na turma
+    
+    PESO_AGRUPAMENTO = 150
+
+    if materias_para_agrupar:
+        for grupo in materias_para_agrupar:
+            # O grupo é uma lista de nomes, ex: ['Artes', 'Ed. Física']
+            if len(grupo) < 2: continue
+            
+            materia_lider = grupo[0]
+            materias_seguidoras = grupo[1:]
+            
+            for turma in turmas_totais:
+                conteudos_turma = mapa_conteudo_turma[turma]
+                
+                # Verifica se essa turma tem essas matérias
+                tem_lider = any(m == materia_lider for p, m in conteudos_turma)
+                if not tem_lider: continue
+
+                for m_seg in materias_seguidoras:
+                    tem_seg = any(m == m_seg for p, m in conteudos_turma)
+                    if not tem_seg: continue
+                    
+                    # Agora sabemos que a turma tem as duas matérias.
+                    # Vamos alinhar dia a dia.
+                    for d in range(len(dias_semana)):
+                        
+                        # Bool: Lider ocorre hoje?
+                        lider_hoje = model.NewBoolVar(f"lid_{turma}_{materia_lider}_{d}")
+                        vars_lider = []
+                        # Pegar var da materia lider (pode ser qqr prof, mas geralmente é 1)
+                        for (p, m) in conteudos_turma:
+                            if m == materia_lider:
+                                aulas_dia = aulas_por_turma_idx[turma]
+                                for a in range(aulas_dia):
+                                    vars_lider.append(horario_vars.get((turma, d, a, p, m), 0))
+                        
+                        # Se soma > 0, então lider_hoje = 1
+                        # Truque CP: sum(vars) > 0 <=> lider_hoje
+                        soma_l = sum(vars_lider)
+                        if isinstance(soma_l, int) and soma_l == 0:
+                             model.Add(lider_hoje == 0)
+                        else:
+                             model.Add(soma_l > 0).OnlyEnforceIf(lider_hoje)
+                             model.Add(soma_l == 0).OnlyEnforceIf(lider_hoje.Not())
+
+                        # Bool: Seguidora ocorre hoje?
+                        seg_hoje = model.NewBoolVar(f"seg_{turma}_{m_seg}_{d}")
+                        vars_seg = []
+                        for (p, m) in conteudos_turma:
+                            if m == m_seg:
+                                aulas_dia = aulas_por_turma_idx[turma]
+                                for a in range(aulas_dia):
+                                    vars_seg.append(horario_vars.get((turma, d, a, p, m), 0))
+                        
+                        soma_s = sum(vars_seg)
+                        if isinstance(soma_s, int) and soma_s == 0:
+                             model.Add(seg_hoje == 0)
+                        else:
+                             model.Add(soma_s > 0).OnlyEnforceIf(seg_hoje)
+                             model.Add(soma_s == 0).OnlyEnforceIf(seg_hoje.Not())
+
+                        # Penalidade se forem diferentes (uma tem aula, a outra não)
+                        # abs(lider - seg)
+                        diferenca = model.NewIntVar(0, 1, f"diff_{turma}_{materia_lider}_{m_seg}_{d}")
+                        model.Add(diferenca == lider_hoje - seg_hoje).OnlyEnforceIf(lider_hoje) # Se lider=1, diff = 1 - seg
+                        model.Add(diferenca == seg_hoje - lider_hoje).OnlyEnforceIf(lider_hoje.Not()) # Se lider=0, diff = seg - 0
+                        
+                        termos_custo.append(diferenca * PESO_AGRUPAMENTO)
+                        detalhes_audit.append({
+                            "tipo": "Agrupamento Falhou",
+                            "desc": f"{turma}: {materia_lider} e {m_seg} separados em {dias_semana[d]}",
+                            "var": diferenca,
+                            "peso": PESO_AGRUPAMENTO
+                        })
+
+
+    # =========================
+    # 4. SOFT CONSTRAINTS (Qualidade de Vida)
+    # =========================
+
+    # G) Evitar Repetição no Mesmo Dia (GEMINADAS PERMITIDAS)
+    # Regra Ajustada: Até 2 aulas (dobradinha) é OK. 3 ou mais penaliza.
+    
+    PESO_REPETICAO_EXCESSIVA = 100
 
     for turma in turmas_totais:
-        for prof in set(i['prof'] for i in grade_aulas):
+        # Analisar por professor
+        profs_da_turma = set(p for p, m in mapa_conteudo_turma[turma])
+        
+        for prof in profs_da_turma:
             for d in range(len(dias_semana)):
                 vars_dia = mapa_turma_prof_horario.get((turma, prof, d), [])
-                if not vars_dia:
-                    continue
+                if not vars_dia: continue
 
-                total_no_dia = model.NewIntVar(
-                    0, max_aulas_escola, f"total_{turma}_{prof}_{d}"
-                )
+                total_no_dia = model.NewIntVar(0, max_aulas_escola, f"tot_rep_{turma}_{prof}_{d}")
                 model.Add(total_no_dia == sum(vars_dia))
 
-                excesso = model.NewIntVar(
-                    0, max_aulas_escola, f"excesso_{turma}_{prof}_{d}"
-                )
-                model.Add(excesso >= total_no_dia - 1)
-                model.Add(excesso >= 0)
+                # Penalidade se > 2 (permitimos geminadas)
+                excesso_geminada = model.NewIntVar(0, max_aulas_escola, f"exc_gem_{turma}_{prof}_{d}")
+                model.Add(excesso_geminada >= total_no_dia - 2)
+                model.Add(excesso_geminada >= 0)
 
-                termos_custo.append(excesso * PESO_REPETICAO_MESMO_DIA)
+                termos_custo.append(excesso_geminada * PESO_REPETICAO_EXCESSIVA)
                 detalhes_audit.append({
-                    "tipo": "Repetição na mesma turma",
-                    "desc": f"{prof} na {turma} ({dias_semana[d]})",
-                    "var": excesso,
-                    "peso": PESO_REPETICAO_MESMO_DIA
+                    "tipo": "Muitas aulas seguidas",
+                    "desc": f"{prof} na {turma} ({dias_semana[d]}) > 2 aulas",
+                    "var": excesso_geminada,
+                    "peso": PESO_REPETICAO_EXCESSIVA
                 })
 
-    # =========================
-    # SOFT CONSTRAINT ⭐ NOVA
-    # EVITAR CONCENTRAÇÃO EXCESSIVA
-    # DE AULAS DO PROFESSOR NO DIA
-    # =========================
-    PESO_EXCESSO_DIARIO = 250
-    LIMITE_SUAVE_DIARIO = 4  # até 4 aulas no dia é aceitável
+    # H) Distribuição Homogênea (Professores não devem ter 5 aulas num dia e 0 no outro se possível)
+    PESO_EXCESSO_DIARIO = 200
+    LIMITE_SUAVE_DIARIO = 4 
 
-    for prof in set(item['prof'] for item in grade_aulas):
-
+    for prof in profs_unicos:
         for d in range(len(dias_semana)):
-            vars_dia = []
+            # Reciclando o calculo de 'trabalha_no_horario' feito nas janelas? 
+            # Não, precisamos da soma total de aulas, não bools.
+            
+            vars_dia_prof = []
+            for a in range(max_aulas_escola):
+                 vars_dia_prof.extend(mapa_prof_horario.get((prof, d, a), []))
+            
+            if not vars_dia_prof: continue
 
-            for item in grade_aulas:
-                if item['prof'] == prof:
-                    turma = item['turma']
-                    materia = item['materia']
-                    aulas_dia = aulas_por_turma_idx[turma]
+            total_dia = model.NewIntVar(0, max_aulas_escola, f"total_prof_{prof}_{d}")
+            model.Add(total_dia == sum(vars_dia_prof))
 
-                    for a in range(aulas_dia):
-                        chave = (turma, d, a, prof, materia)
-                        if chave in horario_vars:
-                            vars_dia.append(horario_vars[chave])
-
-            if not vars_dia:
-                continue
-
-            total_dia = model.NewIntVar(
-                0, max_aulas_escola, f"total_{prof}_{d}"
-            )
-            model.Add(total_dia == sum(vars_dia))
-
-            excesso = model.NewIntVar(
-                0, max_aulas_escola, f"excesso_prof_{prof}_{d}"
-            )
+            excesso = model.NewIntVar(0, max_aulas_escola, f"overload_{prof}_{d}")
             model.Add(excesso >= total_dia - LIMITE_SUAVE_DIARIO)
             model.Add(excesso >= 0)
 
             termos_custo.append(excesso * PESO_EXCESSO_DIARIO)
             detalhes_audit.append({
-                "tipo": "Concentração excessiva",
-                "desc": f"{prof} com muitas aulas em {dias_semana[d]}",
+                "tipo": "Concentração Diária",
+                "desc": f"{prof} sobrecarregado em {dias_semana[d]}",
                 "var": excesso,
                 "peso": PESO_EXCESSO_DIARIO
             })
 
     # =========================
-    # OBJETIVO
+    # 5. OBJETIVO E SOLUÇÃO
     # =========================
     if termos_custo:
         model.Minimize(sum(termos_custo))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 30
+    # Aumentei o tempo um pouco pois a lógica de janelas é complexa
+    solver.parameters.max_time_in_seconds = 45 
     solver.parameters.num_search_workers = 8
+    # Linearização ajuda em problemas de agendamento
+    solver.parameters.linearization_level = 0 
 
     status = solver.Solve(model)
 
@@ -544,7 +699,6 @@ def resolver_horario(
     auditoria = []
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-
         for k, v in horario_vars.items():
             if solver.Value(v) == 1:
                 resultados[k] = 1
@@ -558,8 +712,7 @@ def resolver_horario(
                         "Descrição": item["desc"],
                         "Custo": val * item["peso"]
                     })
-            except:
-                pass
+            except: pass
 
         return "OK", resultados, solver.ObjectiveValue(), auditoria
 
