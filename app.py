@@ -404,14 +404,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     audit_penalties = [] 
 
     # --- 1. CRIAÇÃO DE VARIÁVEIS E MAPEAMENTO ---
-    # Precisamos de um mapa reverso para aplicar restrições de "Dobradinha de Professor"
-    # independente da matéria que ele está dando (ex: Português e Redação)
-    
-    # Mapa: (Turma, Dia, Aula) -> Lista de variáveis (para choque de turma)
     mapa_turma_horario = defaultdict(list)
-    # Mapa: (Prof, Dia, Aula) -> Lista de variáveis (para choque de prof)
     mapa_prof_horario = defaultdict(list)
-    # Mapa: (Turma, Prof, Dia, Aula) -> Lista de variáveis (para dobradinha de prof na mesma turma)
     mapa_turma_prof_horario = defaultdict(list)
 
     aulas_por_turma_idx = {t: t_val // 5 for t, t_val in turmas_totais.items()}
@@ -429,7 +423,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 var = model.NewBoolVar(f'H_{turma}_{d}_{aula}_{prof}_{materia}')
                 horario[chave] = var
                 
-                # Preenche mapas
                 mapa_turma_horario[(turma, d, aula)].append(var)
                 mapa_prof_horario[(prof, d, aula)].append(var)
                 mapa_turma_prof_horario[(turma, prof, d, aula)].append(var)
@@ -464,7 +457,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     # --- R4: INDISPONIBILIDADE ---
     for prof, bloqueios in bloqueios_globais.items():
         for (d, aula) in bloqueios:
-            # Bloqueia todas as matérias desse prof nesse horário
             vars_no_slot = mapa_prof_horario.get((prof, d, aula), [])
             for var in vars_no_slot:
                 model.Add(var == 0)
@@ -481,7 +473,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         bloqueios_count += 1
             capacidade_maxima = int(total_slots_semana - bloqueios_count - qtd_vagas_int)
             
-            # Pega todas as vars desse prof
             all_vars_prof = []
             for d in range(len(dias_semana)):
                 for aula in range(max_aulas_escola):
@@ -495,7 +486,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     # ==========================================
     todas_penalidades = []
 
-    # 1. EVITAR DOBRADINHAS DE PROFESSOR NA MESMA TURMA (MESMO SE FOREM MATÉRIAS DIFERENTES)
+    # 1. EVITAR DOBRADINHAS DE PROFESSOR NA MESMA TURMA (PENALIDADE MÁXIMA)
+    # AQUI ESTA A CORREÇÃO: Peso 100.000 (Preferência Total por Espalhar)
     lista_turmas = list(turmas_totais.keys())
     lista_profs = list(set([i['prof'] for i in grade_aulas]))
 
@@ -503,32 +495,29 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
         aulas_dia = aulas_por_turma_idx.get(turma, 5)
         for prof in lista_profs:
             for d in range(len(dias_semana)):
-                # Itera pelos pares de aulas (1-2, 2-3, etc)
                 for aula in range(aulas_dia - 1):
-                    # Pega TODAS as vars desse prof nessa turma no horário atual (pode ser Port e Red)
+                    # Pega TODAS as vars desse prof nessa turma no horário atual (ex: Port + Red)
                     vars_atual = mapa_turma_prof_horario.get((turma, prof, d, aula), [])
                     vars_prox = mapa_turma_prof_horario.get((turma, prof, d, aula+1), [])
                     
                     if vars_atual and vars_prox:
-                        # Variável auxiliar: 1 se prof dá aula no slot atual
                         tem_aula_atual = model.NewBoolVar(f'tem_{turma}_{prof}_{d}_{aula}')
-                        model.Add(sum(vars_atual) == tem_aula_atual) # Usamos == pois R1 garante que só tem 1 ou 0
+                        model.Add(sum(vars_atual) == tem_aula_atual)
                         
                         tem_aula_prox = model.NewBoolVar(f'tem_{turma}_{prof}_{d}_{aula+1}')
                         model.Add(sum(vars_prox) == tem_aula_prox)
 
-                        # Penalidade se ambos forem 1
                         eh_dobra = model.NewBoolVar(f'dobra_{turma}_{prof}_{d}_{aula}')
                         model.Add(tem_aula_atual + tem_aula_prox <= 1 + eh_dobra)
                         
-                        # PESO ALTO: 500
-                        for _ in range(500): todas_penalidades.append(eh_dobra)
-                        audit_penalties.append({'tipo': 'Dobradinha Professor', 'desc': f'{prof} na {turma} ({dias_semana[d]} {aula+1}-{aula+2})', 'var': eh_dobra, 'peso': 500})
+                        # PESO EXTREMO: 100.000 (Isso força a separação)
+                        for _ in range(100000): todas_penalidades.append(eh_dobra)
+                        audit_penalties.append({'tipo': 'Dobradinha (Evitar)', 'desc': f'{prof} na {turma} ({dias_semana[d]} {aula+1}-{aula+2})', 'var': eh_dobra, 'peso': 100000})
 
-    # 2. EVITAR JANELAS (BURACOS) NO HORÁRIO DO PROFESSOR
+    # 2. EVITAR JANELAS (BURACOS) - PESO 500
+    # O peso é 500 vs 100.000 da dobradinha. O sistema vai PREFERIR janelas do que dobradinhas.
     for prof in lista_profs:
         for d in range(len(dias_semana)):
-            # Mapeia se o prof trabalha em cada slot do dia
             trabalha_no_slot = {} 
             for aula in range(max_aulas_escola):
                 vars_no_slot = mapa_prof_horario.get((prof, d, aula), [])
@@ -539,7 +528,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 else:
                     trabalha_no_slot[aula] = model.NewConstant(0)
 
-            # Janela: Aula (1) -> Vago (0) -> Aula (1)
             for aula in range(max_aulas_escola - 2):
                 v1 = trabalha_no_slot[aula]
                 v2 = trabalha_no_slot[aula+1]
@@ -550,19 +538,13 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 model.AddBoolOr([v1.Not(), v2, v3.Not()]).OnlyEnforceIf(eh_janela.Not())
                 
                 for _ in range(500): todas_penalidades.append(eh_janela)
-                audit_penalties.append({
-                    'tipo': 'Janela (Buraco)', 
-                    'desc': f'{prof} na {dias_semana[d]} (Vago na {aula+2}ª)', 
-                    'var': eh_janela, 
-                    'peso': 500
-                })
+                audit_penalties.append({'tipo': 'Janela (Buraco)', 'desc': f'{prof} - {dias_semana[d]}', 'var': eh_janela, 'peso': 500})
 
-            # Aula Isolada
+            # Aula Isolada (Peso 100)
             soma_dia = sum(trabalha_no_slot.values())
             eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
             model.Add(soma_dia == 1).OnlyEnforceIf(eh_um)
             model.Add(soma_dia != 1).OnlyEnforceIf(eh_um.Not())
-            
             for _ in range(100): todas_penalidades.append(eh_um)
             audit_penalties.append({'tipo': 'Aula Isolada', 'desc': f'{prof} - {dias_semana[d]}', 'var': eh_um, 'peso': 100})
 
@@ -578,3 +560,85 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
         status = solver.Solve(model)
 
     return status, solver, horario, audit_penalties
+
+if uploaded_file is not None:
+    # Chama a função agora "cacheada"
+    turmas_totais, grade_aulas, dias_semana, bloqueios_globais = carregar_dados(uploaded_file)
+    
+    if turmas_totais:
+        # A função verificar_capacidade retorna True se estiver tudo OK, ou False se tiver erro Crítico
+        dados_ok = verificar_capacidade(grade_aulas, bloqueios_globais)
+
+        if dados_ok:
+            st.markdown("### 2. Configurações e Geração")
+            
+            with st.expander("⚙️ Configurações Avançadas", expanded=True):
+                # 1. Seletor de Matérias Sincronizadas
+                st.markdown("#### 🔗 Sincronizar Matérias (Escola Toda)")
+                todas_as_materias = sorted(list(set([g['materia'] for g in grade_aulas])))
+                materias_selecionadas = st.multiselect(
+                    "Selecione matérias:",
+                    options=todas_as_materias,
+                    default=[],
+                    help="As matérias selecionadas acontecerão nos mesmos dias na escola toda."
+                )
+                
+                # 2. Editor de Aulas Vagas
+                st.markdown("#### ⏳ Aulas Vagas (Hora-Atividade)")
+                st.caption("Defina quantas aulas livres cada professor precisa ter na semana.")
+                
+                # Cria DataFrame para edição
+                lista_profs = sorted(list(set([g['prof'] for g in grade_aulas])))
+                df_vagas = pd.DataFrame({
+                    "Professor": lista_profs,
+                    "Aulas Vagas": [0] * len(lista_profs)
+                })
+                
+                # Mostra tabela editável
+                df_editado = st.data_editor(
+                    df_vagas, 
+                    column_config={
+                        "Aulas Vagas": st.column_config.NumberColumn(
+                            "Qtd. Aulas Vagas",
+                            min_value=0,
+                            max_value=15,
+                            step=1,
+                            help="Quantas aulas este professor precisa ter livre?"
+                        )
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                # Converte para dicionário para passar para a função
+                mapa_aulas_vagas_user = dict(zip(df_editado["Professor"], df_editado["Aulas Vagas"]))
+
+            st.write("---")
+            if st.button("🚀 Gerar Horário Agora", type="primary", use_container_width=True):
+                status, solver, horario, audit_penalties = resolver_horario(
+                    turmas_totais, 
+                    grade_aulas, 
+                    dias_semana, 
+                    bloqueios_globais, 
+                    materias_para_agrupar=materias_selecionadas,
+                    mapa_aulas_vagas=mapa_aulas_vagas_user
+                )
+                
+                if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+                    st.success(f"Horário Gerado com Sucesso! (Custo: {solver.ObjectiveValue()})")
+                    
+                    exibir_detalhes_custo(solver, audit_penalties)
+                    exibir_estatisticas(grade_aulas, dias_semana, solver, horario)
+                    exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_aulas)
+                    pdf_bytes = gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario)
+                    st.download_button(
+                        label="📥 Baixar Horário Final em PDF",
+                        data=pdf_bytes,
+                        file_name="Horario_Escolar_Final.pdf",
+                        mime="application/pdf"
+                    )
+                else:
+                    st.error("Não foi possível gerar um horário com essas restrições.")
+        else:
+            st.error("🚫 O BOTÃO DE GERAR ESTÁ BLOQUEADO.")
+            st.warning("Motivo: Existem professores com 'Saldo Negativo'.")
