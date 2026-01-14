@@ -304,6 +304,46 @@ def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario):
     buffer.seek(0)
     return buffer
 
+def exibir_detalhes_custo(solver, audit_penalties):
+    st.markdown("---")
+    st.subheader("💰 Auditoria do Custo (Por que o horário não é perfeito?)")
+    
+    detalhes = []
+    custo_total_calculado = 0
+    
+    for item in audit_penalties:
+        # Verifica se a penalidade foi ativada (se a variável é 1 ou > 0)
+        valor = solver.Value(item['var'])
+        
+        if valor > 0:
+            custo_item = valor * item['peso']
+            custo_total_calculado += custo_item
+            detalhes.append({
+                "Tipo de Penalidade": item['tipo'],
+                "Descrição": item['desc'],
+                "Peso (Gravidade)": item['peso'],
+                "Ocorrências": valor,
+                "Custo Gerado": custo_item
+            })
+            
+    if detalhes:
+        df_detalhes = pd.DataFrame(detalhes)
+        
+        # Agrupamento por Tipo para resumo
+        resumo = df_detalhes.groupby("Tipo de Penalidade")["Custo Gerado"].sum().reset_index()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("RESUMO POR TIPO:")
+            st.dataframe(resumo, use_container_width=True)
+        with col2:
+            st.write("DETALHE INDIVIDUAL:")
+            st.dataframe(df_detalhes[["Tipo de Penalidade", "Descrição", "Custo Gerado"]], use_container_width=True)
+            
+        st.info(f"O custo total de **{custo_total_calculado}** significa que o solver teve que quebrar essas preferências acima para conseguir fechar o horário.")
+    else:
+        st.success("Custo Zero! O horário é perfeito e atende todas as preferências.")
+
 def exibir_estatisticas(grade_aulas, dias_semana, solver, horario):
     st.markdown("---")
     st.subheader("📅 Distribuição de Aulas por Professor (Dia a Dia)")
@@ -363,8 +403,11 @@ def exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_a
 def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais, materias_para_agrupar=[], mapa_aulas_vagas={}):
     model = cp_model.CpModel()
     horario = {}
+    
+    # Lista para guardar o "motivo" das penalidades
+    audit_penalties = [] 
 
-    # Variáveis
+    # --- Variáveis (Mesmo código de antes) ---
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -375,7 +418,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 chave = (turma, d, aula, prof, materia)
                 horario[chave] = model.NewBoolVar(f'{turma}_{d}_{aula}_{prof}_{materia}')
 
-    # R1: Choque de Turma
+    # --- R1: Choque de Turma (Rígida) ---
     for turma, total_semanal in turmas_totais.items():
         aulas_por_dia = total_semanal // 5
         for d in range(len(dias_semana)):
@@ -389,7 +432,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 if vars_neste_horario:
                     model.Add(sum(vars_neste_horario) <= 1)
 
-    # R2: Choque de Professor
+    # --- R2: Choque de Professor (Rígida) ---
     lista_professores = set(item['prof'] for item in grade_aulas)
     max_aulas_escola = max([t // 5 for t in turmas_totais.values()])
 
@@ -405,7 +448,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 if len(vars_do_prof) > 1:
                     model.Add(sum(vars_do_prof) <= 1)
 
-    # R3: Quantidade de Aulas Total
+    # --- R3: Quantidade Total (Rígida) ---
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -422,7 +465,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
             if qtd > 0: model.Add(sum(vars_materia) == qtd)
             else: model.Add(sum(vars_materia) == 0)
 
-    # R4: Indisponibilidade
+    # --- R4: Indisponibilidade (Rígida) ---
     for item in grade_aulas:
         prof = item['prof']
         turma = item['turma']
@@ -437,26 +480,17 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         if chave in horario:
                             model.Add(horario[chave] == 0)
 
-    # R5: GARANTIA DE AULAS VAGAS (CORRIGIDO PARA INT)
+    # --- R5: Aulas Vagas / Hora Atividade (Rígida convertida de Soft) ---
     total_slots_semana = max_aulas_escola * len(dias_semana)
-    
     for prof, qtd_vagas_exigidas in mapa_aulas_vagas.items():
-        # Converte para int para garantir que não venha float
         qtd_vagas_int = int(qtd_vagas_exigidas)
-        
         if qtd_vagas_int > 0:
             bloqueios_count = 0
             if prof in bloqueios_globais:
                 for (d, aula) in bloqueios_globais[prof]:
                     if aula < max_aulas_escola:
                         bloqueios_count += 1
-            
-            # Cálculo da capacidade
-            capacidade_calculada = total_slots_semana - bloqueios_count - qtd_vagas_int
-            
-            # CORREÇÃO: Garante inteiro nativo
-            capacidade_maxima = int(capacidade_calculada)
-            
+            capacidade_maxima = int(total_slots_semana - bloqueios_count - qtd_vagas_int)
             vars_todas_aulas_prof = []
             for item in grade_aulas:
                 if item['prof'] == prof:
@@ -467,15 +501,15 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                             chave = (turma, d, aula, prof, item['materia'])
                             if chave in horario:
                                 vars_todas_aulas_prof.append(horario[chave])
-            
             if vars_todas_aulas_prof:
-                # Usa capacidade_maxima (int)
                 model.Add(sum(vars_todas_aulas_prof) <= capacidade_maxima)
 
-    # OBJETIVOS (PENALIDADES)
+    # ==========================================
+    # OBJETIVOS E PENALIDADES (Aqui entra a Auditoria)
+    # ==========================================
     todas_penalidades = []
 
-    # 1. EVITAR DOBRADINHAS EXCESSIVAS (Peso 1)
+    # 1. EVITAR DOBRADINHAS EXCESSIVAS (>2 seguidas) - Peso 1
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -491,16 +525,29 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
             
             if vars_dia_materia:
                 model.Add(sum(vars_dia_materia) <= 2) 
+                
+                # Penalidade se tiver mais que 1 (ou seja, 2 aulas) - Preferência por aulas espalhadas
+                # Se preferir dobradinhas, remova ou inverta essa lógica. 
+                # Aqui assume-se: Tentar evitar dobradinha se possível, mas permite (custo baixo)
                 tem_dobradinha = model.NewBoolVar(f'dobra_{turma}_{d}_{materia}')
                 model.Add(sum(vars_dia_materia) <= 1 + tem_dobradinha)
+                
                 todas_penalidades.append(tem_dobradinha)
+                
+                # AUDITORIA: Salva a referência
+                audit_penalties.append({
+                    'tipo': 'Dobradinha (2 aulas seguidas)',
+                    'desc': f'{materia} na {turma} ({dias_semana[d]})',
+                    'var': tem_dobradinha,
+                    'peso': 1
+                })
 
-    # 2. AGRUPAMENTO GLOBAL DE MATÉRIAS (Peso 10)
+    # 2. AGRUPAMENTO GLOBAL (Sincronia) - Peso 10
     if len(materias_para_agrupar) > 1:
         for d in range(len(dias_semana)):
             presenca_materias_no_dia = []
             for mat_nome in materias_para_agrupar:
-                vars_dessa_materia_na_escola_toda = []
+                vars_global = []
                 for item in grade_aulas:
                     if normalizar_texto(item['materia']) == normalizar_texto(mat_nome):
                         turma = item['turma']
@@ -508,26 +555,38 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         for aula in range(aulas_dia):
                             chave = (turma, d, aula, item['prof'], item['materia'])
                             if chave in horario:
-                                vars_dessa_materia_na_escola_toda.append(horario[chave])
+                                vars_global.append(horario[chave])
                 
                 tem_na_escola = model.NewBoolVar(f'tem_global_{mat_nome}_{d}')
-                if vars_dessa_materia_na_escola_toda:
-                    model.Add(sum(vars_dessa_materia_na_escola_toda) > 0).OnlyEnforceIf(tem_na_escola)
-                    model.Add(sum(vars_dessa_materia_na_escola_toda) == 0).OnlyEnforceIf(tem_na_escola.Not())
+                if vars_global:
+                    model.Add(sum(vars_global) > 0).OnlyEnforceIf(tem_na_escola)
+                    model.Add(sum(vars_global) == 0).OnlyEnforceIf(tem_na_escola.Not())
                 else:
                     model.Add(tem_na_escola == 0)
                 presenca_materias_no_dia.append(tem_na_escola)
             
+            # Penaliza se uma matéria tem aula e a outra não
             if len(presenca_materias_no_dia) >= 2:
                 for i in range(len(presenca_materias_no_dia) - 1):
                     var_a = presenca_materias_no_dia[i]
                     var_b = presenca_materias_no_dia[i+1]
+                    
                     penalidade_sep = model.NewBoolVar(f'sep_global_{d}_{i}')
                     model.Add(var_a != var_b).OnlyEnforceIf(penalidade_sep)
                     model.Add(var_a == var_b).OnlyEnforceIf(penalidade_sep.Not())
+                    
+                    # Peso 10 (Adiciona 10 vezes na lista de minimização)
                     for _ in range(10): todas_penalidades.append(penalidade_sep)
+                    
+                    # AUDITORIA: Salva referência com peso 10
+                    audit_penalties.append({
+                        'tipo': 'Falha na Sincronia Global',
+                        'desc': f'Matérias desalinhadas na {dias_semana[d]}',
+                        'var': penalidade_sep,
+                        'peso': 10
+                    })
 
-    # 3. CONTROLES DE CARGA DO PROFESSOR (MAX 5 e EVITAR 1)
+    # 3. CARGA DO PROFESSOR (Excesso > 5 e Aula Isolada = 1)
     all_teachers = set(i['prof'] for i in grade_aulas)
     for prof in all_teachers:
         for d in range(len(dias_semana)):
@@ -542,14 +601,36 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                              vars_prof_dia.append(horario[chave])
 
             if vars_prof_dia:
+                # Excesso de Carga (>5 aulas no dia)
                 excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
                 model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
+                
+                # Peso 5 para cada aula excedente
                 for _ in range(5): todas_penalidades.append(excesso_carga)
+                
+                # AUDITORIA
+                audit_penalties.append({
+                    'tipo': 'Carga Excessiva (>5 aulas/dia)',
+                    'desc': f'{prof} na {dias_semana[d]}',
+                    'var': excesso_carga,
+                    'peso': 5
+                })
 
+                # Aula Isolada (Ir à escola apenas para 1 aula)
                 eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
                 model.Add(sum(vars_prof_dia) == 1).OnlyEnforceIf(eh_um)
                 model.Add(sum(vars_prof_dia) != 1).OnlyEnforceIf(eh_um.Not())
+                
+                # Peso 5 para evitar aula única
                 for _ in range(5): todas_penalidades.append(eh_um)
+
+                # AUDITORIA
+                audit_penalties.append({
+                    'tipo': 'Aula Isolada (Apenas 1 tempo)',
+                    'desc': f'{prof} na {dias_semana[d]}',
+                    'var': eh_um,
+                    'peso': 5
+                })
 
     if todas_penalidades:
         model.Minimize(sum(todas_penalidades))
@@ -560,7 +641,8 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     with st.spinner('🤖 O computador está pensando... (Isso pode levar até 3 minutos)'):
         status = solver.Solve(model)
 
-    return status, solver, horario
+    # Retorna também o audit_penalties
+    return status, solver, horario, audit_penalties
 
 # ==========================================
 # APP PRINCIPAL (INTERFACE)
@@ -639,7 +721,8 @@ if uploaded_file is not None:
                 mapa_aulas_vagas_user = dict(zip(df_editado["Professor"], df_editado["Aulas Vagas"]))
 
             if st.button("🚀 Gerar Horário Agora", type="primary"):
-                status, solver, horario = resolver_horario(
+                # Recebe 4 valores agora
+                status, solver, horario, audit_penalties = resolver_horario(
                     turmas_totais, 
                     grade_aulas, 
                     dias_semana, 
@@ -650,6 +733,9 @@ if uploaded_file is not None:
                 
                 if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                     st.success(f"Horário Gerado com Sucesso! (Custo: {solver.ObjectiveValue()})")
+                    
+                    # --- NOVA CHAMADA DE FUNÇÃO AQUI ---
+                    exibir_detalhes_custo(solver, audit_penalties)
                     exibir_estatisticas(grade_aulas, dias_semana, solver, horario)
                     exibir_horarios_na_tela(turmas_totais, dias_semana, solver, horario, grade_aulas)
                     pdf_bytes = gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, solver, horario)
