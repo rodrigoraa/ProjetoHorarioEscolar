@@ -407,7 +407,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     # Lista para guardar o "motivo" das penalidades
     audit_penalties = [] 
 
-    # --- Variáveis (Mesmo código de antes) ---
+    # --- Variáveis ---
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -480,7 +480,7 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                         if chave in horario:
                             model.Add(horario[chave] == 0)
 
-    # --- R5: Aulas Vagas / Hora Atividade (Rígida convertida de Soft) ---
+    # --- R5: Aulas Vagas / Hora Atividade ---
     total_slots_semana = max_aulas_escola * len(dias_semana)
     for prof, qtd_vagas_exigidas in mapa_aulas_vagas.items():
         qtd_vagas_int = int(qtd_vagas_exigidas)
@@ -505,11 +505,12 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                 model.Add(sum(vars_todas_aulas_prof) <= capacidade_maxima)
 
     # ==========================================
-    # OBJETIVOS E PENALIDADES (Aqui entra a Auditoria)
+    # OBJETIVOS E PENALIDADES
     # ==========================================
     todas_penalidades = []
 
-    # 1. EVITAR DOBRADINHAS EXCESSIVAS (>2 seguidas) - Peso 1
+    # 1. EVITAR AULAS CONSECUTIVAS (NOVA LÓGICA) - Peso 10
+    # O objetivo agora é espalhar. Se tiver aula na hora X e hora X+1, penaliza.
     for item in grade_aulas:
         turma = item['turma']
         prof = item['prof']
@@ -517,30 +518,40 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
         aulas_por_dia = turmas_totais[turma] // 5
         
         for d in range(len(dias_semana)):
-            vars_dia_materia = []
+            # Itera pelas aulas do dia, olhando sempre a atual e a próxima
+            for aula in range(aulas_por_dia - 1):
+                chave_atual = (turma, d, aula, prof, materia)
+                chave_proxima = (turma, d, aula + 1, prof, materia)
+                
+                if chave_atual in horario and chave_proxima in horario:
+                    var_atual = horario[chave_atual]
+                    var_proxima = horario[chave_proxima]
+                    
+                    # Cria variável de penalidade: será 1 se ambas as aulas forem preenchidas (1+1=2)
+                    eh_consecutivo = model.NewBoolVar(f'consec_{turma}_{d}_{aula}_{prof}')
+                    
+                    # Se soma for 2, eh_consecutivo TEM que ser 1.
+                    # Se soma for 0 ou 1, eh_consecutivo pode ser 0.
+                    model.Add(var_atual + var_proxima <= 1 + eh_consecutivo)
+                    
+                    # Adiciona penalidade pesada (Peso 10) para evitar dobradinha
+                    for _ in range(10): todas_penalidades.append(eh_consecutivo)
+                    
+                    # AUDITORIA
+                    audit_penalties.append({
+                        'tipo': 'Dobradinha (Aulas Seguidas)',
+                        'desc': f'{materia} na {turma} ({dias_semana[d]} aulas {aula+1} e {aula+2})',
+                        'var': eh_consecutivo,
+                        'peso': 10
+                    })
+            
+            # (Opcional) Limite global de 2 aulas por dia para não acumular mesmo separadas
+            vars_dia = []
             for aula in range(aulas_por_dia):
                 chave = (turma, d, aula, prof, materia)
-                if chave in horario:
-                    vars_dia_materia.append(horario[chave])
-            
-            if vars_dia_materia:
-                model.Add(sum(vars_dia_materia) <= 2) 
-                
-                # Penalidade se tiver mais que 1 (ou seja, 2 aulas) - Preferência por aulas espalhadas
-                # Se preferir dobradinhas, remova ou inverta essa lógica. 
-                # Aqui assume-se: Tentar evitar dobradinha se possível, mas permite (custo baixo)
-                tem_dobradinha = model.NewBoolVar(f'dobra_{turma}_{d}_{materia}')
-                model.Add(sum(vars_dia_materia) <= 1 + tem_dobradinha)
-                
-                todas_penalidades.append(tem_dobradinha)
-                
-                # AUDITORIA: Salva a referência
-                audit_penalties.append({
-                    'tipo': 'Dobradinha (2 aulas seguidas)',
-                    'desc': f'{materia} na {turma} ({dias_semana[d]})',
-                    'var': tem_dobradinha,
-                    'peso': 1
-                })
+                if chave in horario: vars_dia.append(horario[chave])
+            if vars_dia:
+                model.Add(sum(vars_dia) <= 2) # Máximo rígido de 2 aulas no mesmo dia
 
     # 2. AGRUPAMENTO GLOBAL (Sincronia) - Peso 10
     if len(materias_para_agrupar) > 1:
@@ -565,20 +576,14 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                     model.Add(tem_na_escola == 0)
                 presenca_materias_no_dia.append(tem_na_escola)
             
-            # Penaliza se uma matéria tem aula e a outra não
             if len(presenca_materias_no_dia) >= 2:
                 for i in range(len(presenca_materias_no_dia) - 1):
                     var_a = presenca_materias_no_dia[i]
                     var_b = presenca_materias_no_dia[i+1]
-                    
                     penalidade_sep = model.NewBoolVar(f'sep_global_{d}_{i}')
                     model.Add(var_a != var_b).OnlyEnforceIf(penalidade_sep)
                     model.Add(var_a == var_b).OnlyEnforceIf(penalidade_sep.Not())
-                    
-                    # Peso 10 (Adiciona 10 vezes na lista de minimização)
                     for _ in range(10): todas_penalidades.append(penalidade_sep)
-                    
-                    # AUDITORIA: Salva referência com peso 10
                     audit_penalties.append({
                         'tipo': 'Falha na Sincronia Global',
                         'desc': f'Matérias desalinhadas na {dias_semana[d]}',
@@ -601,14 +606,9 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                              vars_prof_dia.append(horario[chave])
 
             if vars_prof_dia:
-                # Excesso de Carga (>5 aulas no dia)
                 excesso_carga = model.NewIntVar(0, 15, f'excesso_{prof}_{d}')
                 model.Add(excesso_carga >= sum(vars_prof_dia) - 5)
-                
-                # Peso 5 para cada aula excedente
                 for _ in range(5): todas_penalidades.append(excesso_carga)
-                
-                # AUDITORIA
                 audit_penalties.append({
                     'tipo': 'Carga Excessiva (>5 aulas/dia)',
                     'desc': f'{prof} na {dias_semana[d]}',
@@ -616,15 +616,10 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
                     'peso': 5
                 })
 
-                # Aula Isolada (Ir à escola apenas para 1 aula)
                 eh_um = model.NewBoolVar(f'eh_um_{prof}_{d}')
                 model.Add(sum(vars_prof_dia) == 1).OnlyEnforceIf(eh_um)
                 model.Add(sum(vars_prof_dia) != 1).OnlyEnforceIf(eh_um.Not())
-                
-                # Peso 5 para evitar aula única
                 for _ in range(5): todas_penalidades.append(eh_um)
-
-                # AUDITORIA
                 audit_penalties.append({
                     'tipo': 'Aula Isolada (Apenas 1 tempo)',
                     'desc': f'{prof} na {dias_semana[d]}',
@@ -641,7 +636,6 @@ def resolver_horario(turmas_totais, grade_aulas, dias_semana, bloqueios_globais,
     with st.spinner('🤖 O computador está pensando... (Isso pode levar até 3 minutos)'):
         status = solver.Solve(model)
 
-    # Retorna também o audit_penalties
     return status, solver, horario, audit_penalties
 
 # ==========================================
