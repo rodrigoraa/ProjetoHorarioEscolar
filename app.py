@@ -850,12 +850,14 @@ def resolver_horario(
         model.Minimize(sum(termos_custo))
 
     solver = cp_model.CpSolver()
-    # Aumentei o tempo um pouco pois a lógica de janelas é complexa
-    solver.parameters.max_time_in_seconds = 45 
+    # De 45 para 300 segundos (5 minutos) ou até 600 (10 minutos)
+    solver.parameters.max_time_in_seconds = 45
+    # Se estiver rodando no seu PC, 8 é bom. Na nuvem grátis, deixe 4 ou 8 mesmo
     solver.parameters.num_search_workers = 8
     # Linearização ajuda em problemas de agendamento
     solver.parameters.linearization_level = 0 
-
+    # DICA PRO: Habilite o log para ver o progresso no terminal (tela preta)
+    solver.parameters.log_search_progress = True
     status = solver.Solve(model)
 
     resultados = {}
