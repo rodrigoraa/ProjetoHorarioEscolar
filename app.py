@@ -813,24 +813,31 @@ def resolver_horario(
                     "peso": PESO_REPETICAO_EXCESSIVA
                 })
 
-    # H) Distribuição Homogênea (Professores não devem ter 5 aulas num dia e 0 no outro se possível)
-    PESO_EXCESSO_DIARIO = 200
+    # ==============================================================================
+    # H & I) CARGA DIÁRIA DO PROFESSOR (Excesso e Aula Única)
+    # Agrupamos aqui para calcular 'total_dia' apenas uma vez por prof/dia
+    # ==============================================================================
+    
+    PESO_EXCESSO_DIARIO = 200    # Penaliza se der muitas aulas no dia (ex: > 4)
     LIMITE_SUAVE_DIARIO = 4 
+    
+    PESO_AULA_UNICA = 350        # [NOVO] Penaliza forte se for para dar só 1 aula
 
     for prof in profs_unicos:
         for d in range(len(dias_semana)):
-            # Reciclando o calculo de 'trabalha_no_horario' feito nas janelas? 
-            # Não, precisamos da soma total de aulas, não bools.
             
+            # Coleta todas as aulas desse prof no dia (em todas as turmas)
             vars_dia_prof = []
             for a in range(max_aulas_escola):
                  vars_dia_prof.extend(mapa_prof_horario.get((prof, d, a), []))
             
             if not vars_dia_prof: continue
 
+            # Variável que conta quantas aulas ele tem no TOTAL neste dia
             total_dia = model.NewIntVar(0, max_aulas_escola, f"total_prof_{prof}_{d}")
             model.Add(total_dia == sum(vars_dia_prof))
 
+            # --- PARTE H: Penalizar Excesso (Cansaço) ---
             excesso = model.NewIntVar(0, max_aulas_escola, f"overload_{prof}_{d}")
             model.Add(excesso >= total_dia - LIMITE_SUAVE_DIARIO)
             model.Add(excesso >= 0)
@@ -841,6 +848,22 @@ def resolver_horario(
                 "desc": f"{prof} sobrecarregado em {dias_semana[d]}",
                 "var": excesso,
                 "peso": PESO_EXCESSO_DIARIO
+            })
+
+            # --- PARTE I: Penalizar Aula Única (Viagem Perdida) --- 
+            # Se total_dia == 1, ativa a penalidade.
+            eh_aula_unica = model.NewBoolVar(f"single_{prof}_{d}")
+            
+            # Lógica: Se total == 1, bool é True. Se total != 1 (0, 2, 3...), bool é False.
+            model.Add(total_dia == 1).OnlyEnforceIf(eh_aula_unica)
+            model.Add(total_dia != 1).OnlyEnforceIf(eh_aula_unica.Not())
+
+            termos_custo.append(eh_aula_unica * PESO_AULA_UNICA)
+            detalhes_audit.append({
+                "tipo": "Aula Isolada",
+                "desc": f"{prof} viaja p/ apenas 1 aula ({dias_semana[d]})",
+                "var": eh_aula_unica,
+                "peso": PESO_AULA_UNICA
             })
 
     # =========================
