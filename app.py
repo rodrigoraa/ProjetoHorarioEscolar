@@ -11,8 +11,139 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.colors import HexColor
 from ortools.sat.python import cp_model
 
+def aplicar_estilo_visual():
+    st.markdown("""
+        <style>
+        /* Importar fonte moderna */
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+
+        html, body, [class*="css"] {
+            font-family: 'Roboto', sans-serif;
+        }
+
+        /* AQUI ESTÁ A CORREÇÃO:
+           Em vez de forçar cores fixas, usamos var(--nome-da-variavel)
+           Isso pega a cor que o usuário escolheu nas configurações (Light ou Dark)
+        */
+
+        /* Estilo dos Títulos */
+        h1, h2, h3 {
+            font-weight: 700;
+            color: var(--text-color); /* Usa a cor do texto do tema atual */
+        }
+
+        /* Cards (Expanders, Forms, Dataframes) */
+        div[data-testid="stExpander"], div.stDataFrame, div[data-testid="stForm"] {
+            background-color: var(--secondary-background-color); /* Cinza claro no Light, Cinza escuro no Dark */
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); /* Sombra um pouco mais forte para aparecer no escuro */
+            border: 1px solid rgba(128, 128, 128, 0.2); /* Borda sutil */
+        }
+
+        /* Botão Principal */
+        button[kind="primary"] {
+            background: linear-gradient(90deg, #1e3c72 0%, #2a5298 100%);
+            border: none;
+            color: white !important; /* Texto sempre branco no botão azul */
+            transition: transform 0.2s;
+        }
+        button[kind="primary"]:hover {
+            transform: scale(1.02);
+        }
+
+        /* Botão Secundário (Download) */
+        button[kind="secondary"] {
+            border-color: var(--text-color);
+            color: var(--text-color);
+        }
+
+        /* Ajustes na Sidebar */
+        section[data-testid="stSidebar"] {
+            background-color: var(--secondary-background-color);
+        }
+        
+        /* Remove o padding excessivo do topo */
+        .block-container {
+            padding-top: 2rem;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+def estilizar_tabela_capacidade(df_logs):
+    # Função interna para colorir o texto baseado na coluna Status
+    def colorir_status(val):
+        color = '#2ecc71' if '✅' in val else '#e74c3c' # Verde se OK, Vermelho se Erro
+        return f'color: {color}; font-weight: bold'
+
+    # Exibe o dataframe estilizado
+    st.dataframe(
+        df_logs.style
+            .applymap(colorir_status, subset=['Status'])
+            # Pinta o fundo da coluna 'Saldo' (Vermelho se negativo, Verde se positivo)
+            .background_gradient(subset=['Saldo'], cmap='RdYlGn', vmin=-5, vmax=5)
+            # Formata os números para não ter casas decimais estranhas
+            .format({'Carga Horária': '{:.0f}', 'Horas Livres': '{:.0f}', 'Saldo': '{:.0f}'}),
+        use_container_width=True,
+        hide_index=True
+    )
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Horários Escolar", layout="wide")
+aplicar_estilo_visual()
+
+# --- INÍCIO DO MENU LATERAL ---
+with st.sidebar:
+    # Tenta carregar uma logo
+    # Se você tiver um arquivo local, use: st.image("sua_logo.png", width=150)
+    st.image("logo.png", width=80)
+    
+    st.title("Sistema Escolar")
+    st.markdown("v2.0")
+    
+    st.markdown("---")
+    
+    # Menu de Navegação
+    # Essa variável 'menu_opcao' vai guardar o que o usuário escolheu
+    menu_opcao = st.radio(
+        "Navegação",
+        ["📁 Upload & Config", "📅 Visualizar Grade", "❓ Ajuda"],
+        captions=["Carregue seus dados", "Veja o resultado final", "Como usar"]
+    )
+    
+    st.markdown("---")
+    
+    # Informações extras no rodapé da barra lateral
+    st.info("💡 **Dica:** Se o cálculo demorar, verifique se há muitas janelas configuradas.")
+    st.caption("Desenvolvido com Python & OR-Tools")
+
+# --- FIM DO MENU LATERAL ---
+
+# -----------------------------------------------------------
+# 2. LOGICA DA PÁGINA PRINCIPAL
+# -----------------------------------------------------------
+
+# Agora você usa a variável 'menu_opcao' para decidir o que mostrar
+if menu_opcao == "📁 Upload & Config":
+    st.title("Configuração da Grade")
+    # ... O resto do seu código de Upload começa aqui ...
+
+elif menu_opcao == "📅 Visualizar Grade":
+    st.title("Grade de Horários")
+    # Aqui você pode mostrar o horário se ele já tiver sido gerado
+    if 'resultado_otimizacao' in st.session_state:
+        st.write("Aqui vai o resultado...")
+    else:
+        st.warning("Gere o horário na aba 'Upload' primeiro!")
+
+elif menu_opcao == "❓ Ajuda":
+    st.title("Como usar o sistema")
+    st.markdown("""
+    1. Prepare sua planilha Excel.
+    2. Vá na aba **Upload**.
+    3. Clique em **Gerar Horário**.
+    """)
+
 
 # ==========================================
 #  FUNÇÕES AUXILIARES
@@ -199,8 +330,34 @@ def carregar_dados(arquivo_upload):
     
     return turmas_totais, grade_aulas, dias_semana, bloqueios_globais
 
+# --- Função Auxiliar de Estilo (Nova) ---
+def estilizar_tabela_capacidade(df_logs):
+    # Define cores para o Status
+    def colorir_status(val):
+        if '✅' in val:
+            color = '#2ecc71' # Verde
+        elif '⚠️' in val:
+            color = '#f39c12' # Laranja
+        else:
+            color = '#e74c3c' # Vermelho
+        return f'color: {color}; font-weight: bold'
+
+    # Aplica o estilo
+    st.dataframe(
+        df_logs.style
+            .applymap(colorir_status, subset=['Status'])
+            # Pinta o fundo da coluna Saldo (Vermelho se negativo, Verde se positivo)
+            .background_gradient(subset=['Saldo'], cmap='RdYlGn', vmin=-2, vmax=2)
+            # Garante que os números não tenham casas decimais (.0f)
+            .format({'Carga': '{:.0f}', 'Livre': '{:.0f}', 'Saldo': '{:.0f}'}),
+        use_container_width=True,
+        hide_index=True
+    )
+
+# --- Sua Função Atualizada ---
 def verificar_capacidade(grade_aulas, bloqueios_globais):
     st.subheader("📊 Análise de Capacidade")
+    
     carga_prof = {}
     for item in grade_aulas:
         p = item['prof']
@@ -221,7 +378,8 @@ def verificar_capacidade(grade_aulas, bloqueios_globais):
 
         disponivel = max_slots_semana - bloqueios
         saldo = disponivel - carga_total
-        status = "✅"
+        status = "✅ OK"
+        
         if saldo < 0:
             status = "❌ CRÍTICO"
             erros_fatais = True
@@ -231,14 +389,19 @@ def verificar_capacidade(grade_aulas, bloqueios_globais):
         logs.append([prof, carga_total, disponivel, saldo, status])
 
     df_logs = pd.DataFrame(logs, columns=["Professor", "Carga", "Livre", "Saldo", "Status"])
-    st.dataframe(df_logs, use_container_width=True)
+    
+    # -------------------------------------------------------
+    # AQUI ESTÁ A MUDANÇA VISUAL
+    # Substituímos o st.dataframe simples pela função estilizada
+    # -------------------------------------------------------
+    estilizar_tabela_capacidade(df_logs)
 
     if erros_fatais:
         st.error("Existem professores com SALDO NEGATIVO. O cálculo não será iniciado.")
     else:
         st.success("Capacidade dos professores parece OK.")
         
-    return not erros_fatais
+    return not erros_fatais 
 
 # ==========================================
 # RELATÓRIOS E VISUALIZAÇÃO
@@ -755,6 +918,25 @@ if uploaded_file is not None:
     
     if turmas_totais:
         dados_ok = verificar_capacidade(grade_aulas, bloqueios_globais)
+
+        st.markdown("### 📊 Resumo da Escola")
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+
+        total_aulas = sum(turmas_totais.values())
+        qtd_profs = len(set(g['prof'] for g in grade_aulas))
+        qtd_turmas = len(turmas_totais)
+
+        # Exibe os cards
+        kpi1.metric("Total de Turmas", qtd_turmas, "🏫")
+        kpi2.metric("Professores", qtd_profs, "👨‍🏫")
+        kpi3.metric("Aulas Semanais", total_aulas, "📚")
+        
+        # Cria um status visual
+        label_status = "Tudo Certo" if dados_ok else "Atenção Necessária"
+        cor_status = "normal" if dados_ok else "inverse" # inverse fica vermelho no tema light
+        kpi4.metric("Status Capacidade", label_status, delta_color=cor_status)
+        
+        st.markdown("---")
 
         if dados_ok:
             st.markdown("### 2. Configurações")
