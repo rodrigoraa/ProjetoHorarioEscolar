@@ -62,7 +62,7 @@ def exibir_contagem_professores(resultado_vars, dias_semana):
     df['Total Semanal'] = df.sum(axis=1)
     df = df.sort_index()
 
-    st.subheader("📊 Carga Horária dos Professores (Alocado)")
+    st.subheader("📊 Carga Horária dos Professores")
     st.dataframe(df, use_container_width=True)
 
 if login_system():
@@ -71,9 +71,7 @@ if login_system():
     st.markdown("---")
 
     with st.sidebar:
-        # Botão de logout persistente (garante visibilidade mesmo se o login mostrar outro botão)
         if st.session_state.get('logged_in', False):
-            # Use on_click callback to guarantee state change + rerun in one action
             st.button("🚪 Sair / Logout", key='logout_main', on_click=_logout_callback)
 
         st.header("📂 Arquivo de Dados")
