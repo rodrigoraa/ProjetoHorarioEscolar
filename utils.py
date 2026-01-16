@@ -320,33 +320,26 @@ def exibir_horarios(turmas, dias, vars_resolvidas, grade):
 
 def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, vars_resolvidas):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1*cm, bottomMargin=1*cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1*cm, bottomMargin=1*cm, leftMargin=1*cm, rightMargin=1*cm)
 
     elements = []
     styles = getSampleStyleSheet()
 
     estilo_tabela = TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#2c3e50')),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 8),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#d3d3d3')),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#f0f0f0')]),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#d3d3d3')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f0f0')]),
     ])
 
     lista_turmas = sorted(turmas_totais.keys())
-    contador = 0
 
-    max_aulas_encontradas = 5
-    for chave in vars_resolvidas:
-        idx_aula = chave[2]
-        if idx_aula >= 5:
-            max_aulas_encontradas = 6
-
-    for turma in lista_turmas:
-        titulo = Paragraph(f"<b>Horário: {turma}</b>", styles['Heading2'])
+    for i, turma in enumerate(lista_turmas):
+        titulo = Paragraph(f"<b>Horário: {turma}</b>", styles['Heading3'])
         elements.append(titulo)
         elements.append(Spacer(1, 0.2*cm))
 
@@ -357,40 +350,52 @@ def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, vars_resolvidas):
         dados = [[Paragraph(h, style_header) for h in header_texts]]
         linha_intervalo_idx = -1
 
-        for aula in range(max_aulas_encontradas):
-            if aula == 3:
-                row = [Paragraph('INTERVALO', style_header)] + [Paragraph('', style_cell) for _ in dias_semana]
-                dados.append(row)
-                linha_intervalo_idx = len(dados) - 1
-                continue
+        if "Médio" in turma:
+            aulas_antes_intervalo = 3
+            aulas_depois_intervalo = 3
+        else:
+            aulas_antes_intervalo = 3
+            aulas_depois_intervalo = 2
 
-            linha = [Paragraph(f"{aula + 1}ª Aula", style_cell)]
+        total_aulas_letivas = aulas_antes_intervalo + aulas_depois_intervalo
+
+        for aula_idx in range(total_aulas_letivas):
+            if aula_idx == aulas_antes_intervalo:
+                row_intervalo = [Paragraph('INTERVALO', style_header)] + [Paragraph('', style_cell) for _ in dias_semana]
+                dados.append(row_intervalo)
+                linha_intervalo_idx = len(dados) - 1
+
+            linha = [Paragraph(f"{aula_idx + 1}ª Aula", style_cell)]
+            
             for d in range(len(dias_semana)):
                 conteudo = "---"
                 for item in grade_aulas:
                     if item['turma'] == turma:
                         prof = item['prof']
                         materia = item['materia']
-                        key = (item['turma'], d, aula, prof, materia)
+                        key = (item['turma'], d, aula_idx, prof, materia)
                         if vars_resolvidas.get(key) == 1:
                             conteudo = f"{materia}\n({prof})"
                             break
+                
                 linha.append(Paragraph(conteudo.replace('\n', '<br/>'), style_cell))
+            
             dados.append(linha)
 
         page_width, _ = A4
-        left_right_margin = 2 * cm
-        first_col_w = 2.2 * cm
-        avail = page_width - left_right_margin - first_col_w
-        day_col_w = max(2.5 * cm, avail / max(1, len(dias_semana)))
-        colWidths = [first_col_w] + [day_col_w] * len(dias_semana)
+        available_width = page_width - 2*cm
+        first_col_w = 2.0 * cm
+        rest_width = available_width - first_col_w
+        day_col_w = rest_width / 5
+        
+        colWidths = [first_col_w] + [day_col_w] * 5
 
         t = Table(dados, colWidths=colWidths)
         t.setStyle(estilo_tabela)
 
         if linha_intervalo_idx != -1:
             estilo_intervalo = TableStyle([
-                ('BACKGROUND', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), HexColor('#95a5a6')),
+                ('BACKGROUND', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), colors.HexColor('#95a5a6')),
                 ('TEXTCOLOR', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), colors.white),
                 ('SPAN', (0, linha_intervalo_idx), (-1, linha_intervalo_idx)),
                 ('FONTNAME', (0, linha_intervalo_idx), (-1, linha_intervalo_idx), 'Helvetica-Bold'),
@@ -400,11 +405,11 @@ def gerar_pdf_bytes(turmas_totais, grade_aulas, dias_semana, vars_resolvidas):
 
         elements.append(t)
 
-        contador += 1
-        if contador % 2 == 0:
-            elements.append(PageBreak())
+        if (i + 1) % 2 == 0:
+            if i < len(lista_turmas) - 1:
+                elements.append(PageBreak())
         else:
-            elements.append(Spacer(1, 1.0*cm))
+            elements.append(Spacer(1, 1.5*cm))
 
     doc.build(elements)
     buffer.seek(0)
