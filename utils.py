@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import urllib.parse
+import altair as alt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -441,3 +442,52 @@ def gerar_modelo_exemplo():
         worksheet.set_column('C:C', 20)
 
     return output.getvalue()
+
+def exibir_contagem_professores(resultado_vars, dias_semana):
+    """
+    Conta e exibe quantas aulas cada professor tem, com tabela estilizada
+    e gráfico colorido por professor.
+    """
+    contagem = {}
+
+    for chave, valor in resultado_vars.items():
+        if valor == 1:
+            dia_idx = chave[1]
+            prof_nome = chave[3]
+
+            if prof_nome not in contagem:
+                contagem[prof_nome] = [0] * len(dias_semana)
+
+            contagem[prof_nome][dia_idx] += 1
+
+    if not contagem:
+        st.warning("Nenhuma aula alocada para exibir.")
+        return
+
+    df = pd.DataFrame.from_dict(contagem, orient='index', columns=dias_semana)
+    df['Total'] = df.sum(axis=1)
+    df = df.sort_values(by='Total', ascending=False)
+
+    st.subheader("📊 Carga Horária Detalhada")
+    st.dataframe(
+        df.style
+        .background_gradient(cmap="Blues", subset=dias_semana)
+        .highlight_max(axis=0, color="#ffcccb")
+        .format("{:.0f}"),
+        use_container_width=True
+    )
+
+    st.markdown("### 🎨 Gráfico de Aulas por Professor")
+    
+    df_grafico = df.reset_index().rename(columns={'index': 'Professor'})
+
+    grafico = alt.Chart(df_grafico).mark_bar().encode(
+        x=alt.X('Professor', sort='-y', title='Professor'),
+        y=alt.Y('Total', title='Qtd de Aulas'),
+        color=alt.Color('Professor', legend=None), 
+        tooltip=['Professor', 'Total'] 
+    ).properties(
+        height=400
+    )
+
+    st.altair_chart(grafico, use_container_width=True)
