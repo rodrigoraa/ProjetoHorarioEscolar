@@ -52,8 +52,6 @@ if auth.login_system():
     st.markdown("---")
 
     with st.sidebar:
-        if st.session_state.get('logged_in', False):
-            st.button("🚪 Sair / Logout", key='logout_main', on_click=_logout_callback)
 
         st.header("📂 Arquivo de Dados")
         arquivo = st.file_uploader("Faça upload da planilha (.xlsx)", type=['xlsx'])
