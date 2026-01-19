@@ -18,12 +18,6 @@ from solver import resolver_horario
 st.set_page_config(page_title="Gerador de Horário Escolar", layout="wide")
 aplicar_estilo_visual()
 
-def _logout_callback():
-    st.session_state['logged_in'] = False
-    st.session_state['username'] = ''
-    st.session_state['token'] = ''
-    st.rerun()
-
 def exibir_contagem_professores(resultado_vars, dias_semana):
     """
     Conta e exibe quantas aulas cada professor tem em cada dia.
@@ -156,6 +150,35 @@ if auth.login_system():
                 col1, col2 = st.columns(2)
                 with col1:
                     permite_geminada = st.toggle("Permitir duas aulas seguidas", value=True)
+                    
+                st.write("---")
+                with st.expander("☕ Configuração de Janelas / Hora Atividade", expanded=False):
+                    st.info("Defina o limite de 'Janelas' (aulas vagas entre duas aulas) permitido por dia para cada professor.")
+                    
+                    lista_profs_unicos = sorted(list(set(item['prof'] for item in grade)))
+                    
+                    df_config_profs = pd.DataFrame({
+                        'Professor': lista_profs_unicos,
+                        'Max_Janelas_Dia': [2] * len(lista_profs_unicos)
+                    })
+                    
+                    df_editado = st.data_editor(
+                        df_config_profs,
+                        column_config={
+                            "Professor": st.column_config.TextColumn("Professor", disabled=True),
+                            "Max_Janelas_Dia": st.column_config.NumberColumn(
+                                "Máx. Janelas/Dia",
+                                help="Quantos buracos o professor aceita no dia? (0 = Aulas seguidas sem intervalo)",
+                                min_value=0,
+                                max_value=5,
+                                step=1,
+                            ),
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                    
+                    mapa_janelas = dict(zip(df_editado['Professor'], df_editado['Max_Janelas_Dia']))
                 
                 if st.button("🚀 Gerar Horário", type="primary"):
                     with st.spinner("Otimizando horários... (Isso pode levar alguns segundos)"):
@@ -167,7 +190,7 @@ if auth.login_system():
                             bloqueios_globais=bloqueios, 
                             config_itinerarios=config_itinerario_dados,
                             materias_para_agrupar=lista_agrupamento,
-                            mapa_aulas_vagas={}, 
+                            mapa_aulas_vagas=mapa_janelas, 
                             permite_geminada=permite_geminada
                         )
                         
