@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import io
 import time
-
+import auth
 from utils import (
     aplicar_estilo_visual, 
-    login_system, 
     carregar_dados, 
     verificar_capacidade, 
     exibir_horarios,       
@@ -16,31 +15,14 @@ from utils import (
 
 from solver import resolver_horario
 
-
 st.set_page_config(page_title="Gerador de Horário Escolar", layout="wide")
 aplicar_estilo_visual()
 
 def _logout_callback():
     st.session_state['logged_in'] = False
     st.session_state['username'] = ''
-    try:
-        if hasattr(st, 'experimental_rerun'):
-            st.experimental_rerun()
-        else:
-            try:
-                st.query_params = {}
-            except Exception:
-                st.markdown("<script>window.location.reload()</script>", unsafe_allow_html=True)
-    except Exception:
-        try:
-            st.query_params = {}
-        except Exception:
-            try:
-                st.markdown("<script>window.location.reload()</script>", unsafe_allow_html=True)
-            except Exception:
-                pass
-
-
+    st.session_state['token'] = ''
+    st.rerun()
 
 def exibir_contagem_professores(resultado_vars, dias_semana):
     """
@@ -64,7 +46,7 @@ def exibir_contagem_professores(resultado_vars, dias_semana):
     st.subheader("📊 Carga Horária dos Professores")
     st.dataframe(df, use_container_width=True)
 
-if login_system():
+if auth.login_system():
     
     st.title("🧩 Gerador de Horário")
     st.markdown("---")
