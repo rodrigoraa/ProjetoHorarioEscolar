@@ -6,3 +6,4 @@ openpyxl
 xlsxwriter
 matplotlib
 python-dotenv
+PyJWT
