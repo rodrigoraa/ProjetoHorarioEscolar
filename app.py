@@ -23,7 +23,6 @@ aplicar_estilo_visual()
 def _logout_callback():
     st.session_state['logged_in'] = False
     st.session_state['username'] = ''
-    # tentar rerun; se indisponível, forçar reload via JS
     try:
         if hasattr(st, 'experimental_rerun'):
             st.experimental_rerun()
