@@ -3,7 +3,6 @@ import jwt
 import datetime
 import os
 from dotenv import load_dotenv
-from datetime import timezone
 
 load_dotenv()
 
@@ -26,51 +25,69 @@ def verify_token():
         return False
 
 def login_system():
-    """Gerencia a tela de login."""
+    """Gerencia a tela de login com layout centralizado."""
     
     if verify_token():
         pass 
     
     if st.session_state.get("logged_in", False):
         with st.sidebar:
-            st.write(f"👤 Logado como: **{st.session_state['username']}**")
-            if st.button("🚪 Sair / Logout"):
+            st.success(f"Logado: **{st.session_state['username']}**")
+            if st.button("🚪 Sair / Logout", use_container_width=True):
                 st.session_state["logged_in"] = False
                 st.session_state["username"] = ""
                 st.session_state["token"] = ""
                 st.rerun()
         return True
-
-    st.markdown("## 🔒 Acesso Restrito")
     
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        username_input = st.text_input("👤 Usuário")
-        password_input = st.text_input("🔑 Senha", type="password")
+    st.write("")
+    st.write("")
+    st.write("")
+    
+    col_esq, col_centro, col_dir = st.columns([1, 1.5, 1])
 
-        if st.button("Entrar"):
-            if "users" in st.secrets:
-                users_db = st.secrets["users"]
-            else:
-                st.error("Erro de Configuração: Banco de usuários não encontrado no secrets.")
-                st.stop()
+    with col_centro:
+        with st.container(border=True):
+            st.markdown("<h2 style='text-align: center;'>🔐 Acesso Restrito</h2>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: gray;'>Insira suas credenciais para continuar</p>", unsafe_allow_html=True)
             
-            if username_input in users_db and users_db[username_input] == password_input:
-                payload = {
-                    "username": username_input,
-                    "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
-                }
-                token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-                
-                st.session_state["token"] = token
-                st.session_state["logged_in"] = True
-                st.session_state["username"] = username_input
-                st.success("Logado com sucesso!")
-                st.rerun()
-            else:
-                st.error("Usuário ou senha incorretos.")
+            st.write("")
 
-    with col2:
-        st.info("Entre em contato para solicitar acesso.")
+            username_input = st.text_input("Usuário", placeholder="Digite seu usuário")
+            password_input = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+
+            st.write("")
+            
+            if st.button("Entrar no Sistema", type="primary", use_container_width=True):
+                if "users" in st.secrets:
+                    users_db = st.secrets["users"]
+                else:
+                    st.error("Erro de Configuração: Secrets não encontrado.")
+                    st.stop()
+                
+                if username_input in users_db and users_db[username_input] == password_input:
+                    payload = {
+                        "username": username_input,
+                        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8) # Aumentei para 8h (dia de trabalho)
+                    }
+                    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+                    
+                    st.session_state["token"] = token
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = username_input
+                    st.toast("Login realizado com sucesso!", icon="✅")
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos.")
+
+            st.markdown("---")
+            
+            meu_zap = "+5567999455111"
+            link_zap = f"https://wa.me/{meu_zap}?text=Preciso%20de%20ajuda%20com%20o%20login"
+            st.markdown(
+                f"<div style='text-align: center;'><a href='{link_zap}' target='_blank' style='text-decoration: none; color: #666;'>Precisa de acesso? Fale com o suporte 📲</a></div>", 
+                unsafe_allow_html=True
+            )
 
     return False
